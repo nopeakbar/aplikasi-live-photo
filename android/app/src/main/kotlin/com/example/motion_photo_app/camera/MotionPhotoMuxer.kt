@@ -73,10 +73,12 @@ object MotionPhotoMuxer {
             tempFile.copyTo(photoFile, overwrite = true)
             tempFile.delete()
 
-            // FIX Bug #5: Hapus file video sementara setelah berhasil tertanam di JPG
+            // ✅ FIX: Comment fungsi delete video sementara agar Flutter video_player bisa membaca hidden file-nya
+            /*
             if (videoFile.exists()) {
                 videoFile.delete()
             }
+            */
 
             Log.d("MotionPhotoMuxer", "✅ XMP V2 Injected! Video size: $videoSize bytes")
 
@@ -109,7 +111,7 @@ object MotionPhotoMuxer {
                     out.write(photoBytes, i, photoBytes.size - i)
                     break
                 }
-                
+               
                 val segmentLength = ((photoBytes[i + 2].toInt() and 0xFF) shl 8) or (photoBytes[i + 3].toInt() and 0xFF)
                 var isXmp = false
                 
@@ -136,4 +138,4 @@ object MotionPhotoMuxer {
         }
         return out.toByteArray()
     }
-}   
+}

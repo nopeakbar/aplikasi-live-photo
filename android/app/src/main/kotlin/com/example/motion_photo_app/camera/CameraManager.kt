@@ -169,7 +169,9 @@ class CameraManager(private val activity: MainActivity) {
         ).also { if (!it.exists()) it.mkdirs() }
 
         val photoFile = File(appFolder, "IMG_$timestamp.jpg")
-        val videoFile = File(appFolder, "VID_$timestamp.mp4")
+        
+        // ✅ FIX: Tambahkan awalan titik agar menjadi hidden file untuk Flutter
+        val videoFile = File(appFolder, ".VID_$timestamp.mp4")
 
         activePhotoFile = photoFile
         activeVideoFile = videoFile
@@ -221,7 +223,6 @@ class CameraManager(private val activity: MainActivity) {
                     MotionPhotoMuxer.mux(photoFile, videoFile)
 
                     // 3. FIX Bug #3: Scan HANYA dilakukan SETELAH muxing selesai dan video terhapus.
-                    // Jika di-scan sebelum muxing, Gallery akan caching sebagai foto biasa selamanya.
                     android.media.MediaScannerConnection.scanFile(
                         activity,
                         arrayOf(photoFile.absolutePath),

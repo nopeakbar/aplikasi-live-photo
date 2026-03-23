@@ -42,14 +42,22 @@ class _GalleryScreenState extends State<GalleryScreen> {
     final files = dir.listSync().whereType<File>().toList();
     final jpgFiles = files.where((f) => f.path.endsWith('.jpg')).toList()
       ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
     final items = <LivePhotoItem>[];
+
     for (final jpg in jpgFiles) {
-      final mp4Path = jpg.path
-          .replaceAll('IMG_', '.VID_')
-          .replaceAll('.jpg', '.mp4');
+      // ✅ FIX: Parsing string path yang lebih aman agar tidak merusak nama folder
+      final fileName = jpg.path.split('/').last;
+      final mp4FileName = fileName
+          .replaceFirst('IMG_', '.VID_')
+          .replaceFirst('.jpg', '.mp4');
+      final mp4Path = '${jpg.parent.path}/$mp4FileName';
+
       final mp4 = File(mp4Path);
       if (await mp4.exists()) {
         items.add(LivePhotoItem(photo: jpg, video: mp4));
+      } else {
+        debugPrint("⏳ Video MP4 belum siap: $mp4Path");
       }
     }
 
@@ -111,16 +119,26 @@ class _GalleryScreenState extends State<GalleryScreen> {
   }
 
   Widget _buildGrid() {
-    return GridView.builder(
-      padding: const EdgeInsets.all(1),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 1.5,
-        mainAxisSpacing: 1.5,
+    // ✅ FIX: Tambahkan RefreshIndicator agar bisa diswipe kebawah
+    return RefreshIndicator(
+      onRefresh: _loadItems,
+      backgroundColor: Colors.black87,
+      color: Colors.white,
+      child: GridView.builder(
+        padding: const EdgeInsets.all(1),
+        // ✅ FIX: Selalu bisa discroll meskipun item sedikit
+        physics: const AlwaysScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 1.5,
+          mainAxisSpacing: 1.5,
+        ),
+        itemCount: _items.length,
+        itemBuilder: (ctx, i) => LivePhotoTile(
+          item: _items[i],
+          onTap: () => _openFullScreen(ctx, i),
+        ),
       ),
-      itemCount: _items.length,
-      itemBuilder: (ctx, i) =>
-          LivePhotoTile(item: _items[i], onTap: () => _openFullScreen(ctx, i)),
     );
   }
 
@@ -312,7 +330,6 @@ class _LivePhotoViewerState extends State<LivePhotoViewer>
 class _LivePhotoPage extends StatefulWidget {
   final LivePhotoItem item;
   const _LivePhotoPage({required this.item});
-
   @override
   State<_LivePhotoPage> createState() => _LivePhotoPageState();
 }
@@ -326,7 +343,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
   late AnimationController _zoomCtrl;
   late Animation<double> _zoomAnim;
-
   late AnimationController _fadeCtrl;
   late Animation<double> _fadeAnim;
 
@@ -335,12 +351,10 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
   late AnimationController _hintCtrl;
   late Animation<double> _hintOpacity;
-
   @override
   void initState() {
     super.initState();
 
-    // Diupdate menjadi 400ms dan Curve fastOutSlowIn agar identik Apple
     _zoomCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 400),
@@ -349,8 +363,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 1.0,
       end: 1.08,
     ).animate(CurvedAnimation(parent: _zoomCtrl, curve: Curves.fastOutSlowIn));
-
-    // Crossfade lebih cepat 250ms
     _fadeCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 250),
@@ -359,7 +371,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 0.0,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeIn));
-
     _badgePulse = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -368,7 +379,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 0.6,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _badgePulse, curve: Curves.easeInOut));
-
     _hintCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -397,7 +407,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       _isLoading = true;
       _didFinish = false;
     });
-
     _zoomCtrl.forward();
     _hintCtrl.reverse();
 
@@ -412,7 +421,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
     _fadeCtrl.forward();
     _badgePulse.repeat(reverse: true);
-
     if (mounted) {
       setState(() {
         _isPlaying = true;
@@ -439,7 +447,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
     _zoomCtrl.reverse();
     _badgePulse.stop();
     _badgePulse.reset();
-
     if (mounted) {
       setState(() {
         _isPlaying = false;
@@ -470,6 +477,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
               gaplessPlayback: true,
             ),
           ),
+
           if (_videoCtrl != null && _videoCtrl!.value.isInitialized)
             AnimatedBuilder(
               animation: Listenable.merge([_fadeAnim, _zoomAnim]),
@@ -505,6 +513,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
                   )
                 : _LiveBadge(small: false, staticOpacity: 0.85),
           ),
+
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
           if (!_isPlaying)
             Positioned(
@@ -602,8 +611,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       'Des',
     ];
     return '${dt.day} ${months[dt.month]} ${dt.year}  '
-        '${dt.hour.toString().padLeft(2, '0')}:'
-        '${dt.minute.toString().padLeft(2, '0')}';
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 }
 
@@ -614,7 +622,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 class _VideoProgressPill extends StatefulWidget {
   final VideoPlayerController controller;
   const _VideoProgressPill({required this.controller});
-
   @override
   State<_VideoProgressPill> createState() => _VideoProgressPillState();
 }
