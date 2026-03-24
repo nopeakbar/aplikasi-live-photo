@@ -26,6 +26,7 @@ class GalleryScreen extends StatefulWidget {
 class _GalleryScreenState extends State<GalleryScreen> {
   List<LivePhotoItem> _items = [];
   bool _isLoading = true;
+
   @override
   void initState() {
     super.initState();
@@ -33,6 +34,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
   }
 
   Future<void> _loadItems() async {
+    setState(() => _isLoading = true);
+
     final dir = Directory('/storage/emulated/0/Pictures/MotionPhotoApp');
     if (!await dir.exists()) {
       setState(() => _isLoading = false);
@@ -40,24 +43,45 @@ class _GalleryScreenState extends State<GalleryScreen> {
     }
 
     final files = dir.listSync().whereType<File>().toList();
+
+    // Ambil semua file .jpg (termasuk format lama dan format baru _MP.jpg)
     final jpgFiles = files.where((f) => f.path.endsWith('.jpg')).toList()
       ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
 
     final items = <LivePhotoItem>[];
 
     for (final jpg in jpgFiles) {
-      // ✅ FIX: Parsing string path yang lebih aman agar tidak merusak nama folder
       final fileName = jpg.path.split('/').last;
-      final mp4FileName = fileName
-          .replaceFirst('IMG_', '.VID_')
-          .replaceFirst('.jpg', '.mp4');
-      final mp4Path = '${jpg.parent.path}/$mp4FileName';
 
+      // FIX #3: Update parsing nama file sesuai konvensi _MP.jpg yang sudah diperbaiki.
+      //
+      // Format baru  : IMG_20260324_101530_MP.jpg  →  .VID_20260324_101530_MP.mp4
+      // Format lama  : IMG_20260324_101530MP.jpg   →  .VID_20260324_101530MP.mp4  (backward compat)
+      // Format biasa : IMG_20260324_101530.jpg     →  .VID_20260324_101530.mp4    (foto biasa, skip)
+      String mp4FileName;
+
+      if (fileName.contains('_MP.jpg')) {
+        // Format baru (dengan underscore) — prioritas
+        mp4FileName = fileName
+            .replaceFirst('IMG_', '.VID_')
+            .replaceFirst('_MP.jpg', '_MP.mp4');
+      } else if (fileName.contains('MP.jpg')) {
+        // Format lama (tanpa underscore) — backward compatibility
+        mp4FileName = fileName
+            .replaceFirst('IMG_', '.VID_')
+            .replaceFirst('MP.jpg', 'MP.mp4');
+      } else {
+        // Foto biasa tanpa video — skip
+        continue;
+      }
+
+      final mp4Path = '${jpg.parent.path}/$mp4FileName';
       final mp4 = File(mp4Path);
+
       if (await mp4.exists()) {
         items.add(LivePhotoItem(photo: jpg, video: mp4));
       } else {
-        debugPrint("⏳ Video MP4 belum siap: $mp4Path");
+        debugPrint('⏳ Video MP4 belum siap atau tidak ditemukan: $mp4Path');
       }
     }
 
@@ -103,7 +127,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
+          const Icon(
             Icons.motion_photos_off_outlined,
             color: Colors.white12,
             size: 56,
@@ -119,14 +143,12 @@ class _GalleryScreenState extends State<GalleryScreen> {
   }
 
   Widget _buildGrid() {
-    // ✅ FIX: Tambahkan RefreshIndicator agar bisa diswipe kebawah
     return RefreshIndicator(
       onRefresh: _loadItems,
       backgroundColor: Colors.black87,
       color: Colors.white,
       child: GridView.builder(
         padding: const EdgeInsets.all(1),
-        // ✅ FIX: Selalu bisa discroll meskipun item sedikit
         physics: const AlwaysScrollableScrollPhysics(),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 3,
@@ -146,9 +168,9 @@ class _GalleryScreenState extends State<GalleryScreen> {
     Navigator.push(
       ctx,
       PageRouteBuilder(
-        pageBuilder: (_, __, ___) =>
+        pageBuilder: (_, _, _) =>
             LivePhotoViewer(items: _items, initialIndex: index),
-        transitionsBuilder: (_, anim, __, child) =>
+        transitionsBuilder: (_, anim, _, child) =>
             FadeTransition(opacity: anim, child: child),
         transitionDuration: const Duration(milliseconds: 280),
       ),
@@ -351,6 +373,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
   late AnimationController _hintCtrl;
   late Animation<double> _hintOpacity;
+
   @override
   void initState() {
     super.initState();
@@ -492,6 +515,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
                 ),
               ),
             ),
+
           if (_isLoading)
             const Center(
               child: SizedBox(
@@ -503,6 +527,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
                 ),
               ),
             ),
+
           Positioned(
             top: MediaQuery.of(context).padding.top + 56,
             left: 16,
@@ -515,6 +540,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
           ),
 
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
+
           if (!_isPlaying)
             Positioned(
               bottom: 90,

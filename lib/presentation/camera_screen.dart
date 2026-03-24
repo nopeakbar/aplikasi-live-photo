@@ -23,7 +23,7 @@ class _CameraScreenState extends State<CameraScreen>
   // ── State Pengaturan Kamera ──
   int _targetFps = 30;
   bool _isLiveEnabled = true;
-  int _flashMode = 0; // 0: Auto, 1: On, 2: Off
+  int _flashMode = 2; // 0: Auto, 1: On, 2: Off
 
   // ── State Fitur Baru ──
   bool _showGrid = false; // Toggle Grid 3x3
@@ -121,9 +121,9 @@ class _CameraScreenState extends State<CameraScreen>
   void _toggleTimer() {
     HapticFeedback.selectionClick();
     setState(() {
-      if (_timerSetting == 0)
+      if (_timerSetting == 0) {
         _timerSetting = 3;
-      else if (_timerSetting == 3)
+      } else if (_timerSetting == 3)
         _timerSetting = 10;
       else
         _timerSetting = 0;

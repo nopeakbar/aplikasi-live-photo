@@ -37,7 +37,7 @@ class CameraManager(private val activity: MainActivity) {
     @Volatile private var isPhotoSaved = false
     @Volatile private var isPostCaptureDone = false
     private var preFramesSnapshot: List<VideoFrame> = emptyList()
-    
+
     // Penampung file sementara
     private var activePhotoFile: File? = null
     private var activeVideoFile: File? = null
@@ -64,7 +64,7 @@ class CameraManager(private val activity: MainActivity) {
         } else {
             CameraSelector.LENS_FACING_BACK
         }
-        startCamera(30) // Fallback default fps saat flip
+        startCamera(30)
     }
 
     fun setFlashMode(mode: Int) {
@@ -124,7 +124,7 @@ class CameraManager(private val activity: MainActivity) {
                         cameraProvider.bindToLifecycle(
                             activity,
                             CameraSelector.Builder().requireLensFacing(lensFacing).build(),
-                            preview,          
+                            preview,
                             imageCapture,
                             imageAnalyzer
                         )
@@ -150,28 +150,31 @@ class CameraManager(private val activity: MainActivity) {
         preFramesSnapshot = preBuffer.getBufferSnapshot()
         preBuffer.clear()
         postBuffer.clear()
-        
+
         if (isLiveEnabled) {
             isCapturing = true
             isPostCaptureDone = false
         } else {
-            isCapturing = false 
-            isPostCaptureDone = true // Bypass video
+            isCapturing = false
+            isPostCaptureDone = true
         }
-        
+
         isPhotoSaved = false
         postCaptureStartMs = System.currentTimeMillis()
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
         val appFolder = File(
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), 
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
             "MotionPhotoApp"
         ).also { if (!it.exists()) it.mkdirs() }
 
-        val photoFile = File(appFolder, "IMG_$timestamp.jpg")
-        
-        // ✅ FIX: Tambahkan awalan titik agar menjadi hidden file untuk Flutter
-        val videoFile = File(appFolder, ".VID_$timestamp.mp4")
+        // FIX #3: Suffix "_MP" dengan underscore sesuai spec Android Motion Photo format 1.0
+        // Contoh referensi dari research: IMG_20261012_105230_MP.jpg
+        // Underscore sebelum "MP" mengaktifkan legacy fallback detection di Samsung Gallery.
+        val photoFile = File(appFolder, "IMG_${timestamp}_MP.jpg")
+
+        // Hidden file untuk video sementara agar tidak muncul di galeri sebagai video terpisah
+        val videoFile = File(appFolder, ".VID_${timestamp}_MP.mp4")
 
         activePhotoFile = photoFile
         activeVideoFile = videoFile
@@ -183,11 +186,10 @@ class CameraManager(private val activity: MainActivity) {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     Log.d("CameraManager", "Foto OK. isLiveEnabled: $isLiveEnabled")
                     isPhotoSaved = true
-                    
+
                     if (isLiveEnabled) {
                         checkAndEncode(photoFile, videoFile)
                     } else {
-                        // Jika bukan Live Photo, scan fotonya saja
                         android.media.MediaScannerConnection.scanFile(
                             activity, arrayOf(photoFile.absolutePath), arrayOf("image/jpeg")
                         ) { path, _ -> Log.d("CameraManager", "Scanned Image Only: $path") }
@@ -218,17 +220,21 @@ class CameraManager(private val activity: MainActivity) {
                 try {
                     // 1. Encode video ke hidden file .mp4
                     VideoEncoder().encodeToMp4(allFrames, videoFile)
-                    
-                    // 2. Muxing: Menyatukan MP4 ke dalam file JPG dengan XMP Metadata V2
+
+                    // 2. Muxing: Gabungkan MP4 ke dalam JPEG dengan XMP Motion Photo V1
+                    //    (GCamera:MotionPhoto + Container:Directory yang benar)
                     MotionPhotoMuxer.mux(photoFile, videoFile)
 
-                    // 3. FIX Bug #3: Scan HANYA dilakukan SETELAH muxing selesai dan video terhapus.
+                    // 3. Scan file gabungan ke MediaStore SETELAH muxing selesai.
+                    //    null mimeType → MediaScanner auto-detect, lebih reliable di One UI 6+
                     android.media.MediaScannerConnection.scanFile(
                         activity,
                         arrayOf(photoFile.absolutePath),
-                        arrayOf("image/jpeg")
-                    ) { path, _ -> Log.d("CameraManager", "Scanned JPG Successfully: $path") }
-                    
+                        null  // null = biarkan scanner detect MIME sendiri dari konten file
+                    ) { path, uri ->
+                        Log.d("CameraManager", "✅ MediaStore scan selesai: $path | URI: $uri")
+                    }
+
                     Log.d("CameraManager", "✅ Native Motion Photo selesai & Siap dibaca Galeri Samsung/Google Photos!")
 
                 } catch (e: Exception) {
