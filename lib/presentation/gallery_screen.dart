@@ -2,9 +2,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import '../core/video_processor.dart';
 
 // ═══════════════════════════════════════════════════════════
-// DATA MODEL
+// DATA MODEL & ENUM
 // ═══════════════════════════════════════════════════════════
 
 class LivePhotoItem {
@@ -12,6 +13,9 @@ class LivePhotoItem {
   final File video;
   const LivePhotoItem({required this.photo, required this.video});
 }
+
+// TAMBAHAN: Enum untuk jenis efek Live Photo
+enum LiveEffect { live, loop, bounce, longExposure }
 
 // ═══════════════════════════════════════════════════════════
 // GALLERY SCREEN
@@ -47,37 +51,29 @@ class _GalleryScreenState extends State<GalleryScreen> {
     // Ambil semua file .jpg (termasuk format lama dan format baru _MP.jpg)
     final jpgFiles = files.where((f) => f.path.endsWith('.jpg')).toList()
       ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-
     final items = <LivePhotoItem>[];
 
     for (final jpg in jpgFiles) {
       final fileName = jpg.path.split('/').last;
 
-      // FIX #3: Update parsing nama file sesuai konvensi _MP.jpg yang sudah diperbaiki.
-      //
-      // Format baru  : IMG_20260324_101530_MP.jpg  →  .VID_20260324_101530_MP.mp4
-      // Format lama  : IMG_20260324_101530MP.jpg   →  .VID_20260324_101530MP.mp4  (backward compat)
-      // Format biasa : IMG_20260324_101530.jpg     →  .VID_20260324_101530.mp4    (foto biasa, skip)
       String mp4FileName;
-
       if (fileName.contains('_MP.jpg')) {
-        // Format baru (dengan underscore) — prioritas
+        // Format baru (dengan underscore)
         mp4FileName = fileName
             .replaceFirst('IMG_', '.VID_')
             .replaceFirst('_MP.jpg', '_MP.mp4');
       } else if (fileName.contains('MP.jpg')) {
-        // Format lama (tanpa underscore) — backward compatibility
+        // Format lama (tanpa underscore)
         mp4FileName = fileName
             .replaceFirst('IMG_', '.VID_')
             .replaceFirst('MP.jpg', 'MP.mp4');
       } else {
-        // Foto biasa tanpa video — skip
+        // Foto biasa tanpa video
         continue;
       }
 
       final mp4Path = '${jpg.parent.path}/$mp4FileName';
       final mp4 = File(mp4Path);
-
       if (await mp4.exists()) {
         items.add(LivePhotoItem(photo: jpg, video: mp4));
       } else {
@@ -215,7 +211,7 @@ class _LivePhotoTileState extends State<LivePhotoTile>
     HapticFeedback.lightImpact();
     _ctrl = VideoPlayerController.file(widget.item.video);
     await _ctrl!.initialize();
-    _ctrl!.setVolume(0);
+    _ctrl!.setVolume(0); // Grid selalu mute
     _ctrl!.setLooping(true);
     await _ctrl!.play();
     if (mounted) setState(() => _isPlaying = true);
@@ -267,7 +263,7 @@ class _LivePhotoTileState extends State<LivePhotoTile>
             left: 5,
             child: FadeTransition(
               opacity: _badgeOpacity,
-              child: _LiveBadge(small: true),
+              child: const _LiveBadge(small: true),
             ),
           ),
         ],
@@ -334,6 +330,24 @@ class _LivePhotoViewerState extends State<LivePhotoViewer>
         centerTitle: true,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
+        actions: [
+          // TAMBAHAN: Tombol Trim/Edit (Kosmetik / Placeholder)
+          TextButton(
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Fitur Trim Video membutuhkan package video_editor',
+                  ),
+                ),
+              );
+            },
+            child: const Text(
+              'Edit',
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ),
+        ],
       ),
       body: PageView.builder(
         controller: _pageCtrl,
@@ -363,6 +377,15 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   bool _isLoading = false;
   bool _didFinish = false;
 
+  // State untuk Efek & Audio
+  LiveEffect _currentEffect = LiveEffect.live;
+  bool _isMuted = false;
+
+  // State untuk FFmpeg
+  bool _isProcessingEffect = false;
+  File? _processedVideoFile;
+  File? _longExposureImageFile;
+
   late AnimationController _zoomCtrl;
   late Animation<double> _zoomAnim;
   late AnimationController _fadeCtrl;
@@ -386,6 +409,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 1.0,
       end: 1.08,
     ).animate(CurvedAnimation(parent: _zoomCtrl, curve: Curves.fastOutSlowIn));
+
     _fadeCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 250),
@@ -394,6 +418,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 0.0,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeIn));
+
     _badgePulse = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -402,12 +427,14 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
       begin: 0.6,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _badgePulse, curve: Curves.easeInOut));
+
     _hintCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
       value: 1.0,
     );
     _hintOpacity = CurvedAnimation(parent: _hintCtrl, curve: Curves.easeOut);
+
     Future.delayed(const Duration(seconds: 2), () {
       if (mounted && !_isPlaying) _hintCtrl.reverse();
     });
@@ -424,20 +451,29 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   }
 
   Future<void> _startLive() async {
-    if (_isLoading || _isPlaying) return;
+    if (_isLoading || _isPlaying || _isProcessingEffect) return;
     HapticFeedback.heavyImpact();
     setState(() {
       _isLoading = true;
       _didFinish = false;
     });
+
     _zoomCtrl.forward();
     _hintCtrl.reverse();
 
     _videoCtrl?.dispose();
-    _videoCtrl = VideoPlayerController.file(widget.item.video);
+
+    // Gunakan file hasil edit (Bounce) jika ada, kalau tidak gunakan video asli
+    final targetVideo = _processedVideoFile ?? widget.item.video;
+
+    _videoCtrl = VideoPlayerController.file(targetVideo);
     await _videoCtrl!.initialize();
-    _videoCtrl!.setVolume(1.0);
-    _videoCtrl!.setLooping(false);
+
+    _videoCtrl!.setVolume(_isMuted ? 0.0 : 1.0);
+    // Atur looping otomatis untuk efek Loop dan Bounce
+    _videoCtrl!.setLooping(
+      _currentEffect == LiveEffect.loop || _currentEffect == LiveEffect.bounce,
+    );
     _videoCtrl!.addListener(_onVideoTick);
 
     await _videoCtrl!.play();
@@ -455,13 +491,25 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   void _onVideoTick() {
     if (_videoCtrl == null) return;
     final val = _videoCtrl!.value;
-    if (val.position >= val.duration && !_didFinish) {
+
+    // Cegah didFinish jika efeknya Loop atau Bounce
+    if (val.position >= val.duration &&
+        !_didFinish &&
+        _currentEffect != LiveEffect.loop &&
+        _currentEffect != LiveEffect.bounce) {
       _didFinish = true;
       _stopLive(autoStopped: true);
     }
   }
 
   Future<void> _stopLive({bool autoStopped = false}) async {
+    // Jika efeknya Loop atau Bounce, video tidak berhenti saat layar dilepas
+    if ((_currentEffect == LiveEffect.loop ||
+            _currentEffect == LiveEffect.bounce) &&
+        !autoStopped) {
+      return;
+    }
+
     if (!_isPlaying && !_isLoading) return;
     if (!autoStopped) HapticFeedback.lightImpact();
 
@@ -470,6 +518,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
     _zoomCtrl.reverse();
     _badgePulse.stop();
     _badgePulse.reset();
+
     if (mounted) {
       setState(() {
         _isPlaying = false;
@@ -482,14 +531,176 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
     _videoCtrl = null;
   }
 
+  void _showEffectsMenu(BuildContext context) {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Efek Live Photo',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildEffectOption(
+                        LiveEffect.live,
+                        'Live',
+                        Icons.motion_photos_on,
+                      ),
+                      const SizedBox(width: 16),
+                      _buildEffectOption(
+                        LiveEffect.loop,
+                        'Loop',
+                        Icons.loop_rounded,
+                      ),
+                      const SizedBox(width: 16),
+                      _buildEffectOption(
+                        LiveEffect.bounce,
+                        'Pantulkan',
+                        Icons.compare_arrows_rounded,
+                      ),
+                      const SizedBox(width: 16),
+                      _buildEffectOption(
+                        LiveEffect.longExposure,
+                        'Eksposur\nPanjang',
+                        Icons.camera_enhance_rounded,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildEffectOption(LiveEffect effect, String title, IconData icon) {
+    final isSelected = _currentEffect == effect;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _currentEffect = effect);
+        Navigator.pop(context);
+        _applyEffect(effect);
+      },
+      child: Column(
+        children: [
+          Container(
+            width: 70,
+            height: 70,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isSelected ? Colors.white : Colors.transparent,
+                width: 2,
+              ),
+              color: isSelected ? Colors.white24 : Colors.white12,
+            ),
+            child: Icon(icon, color: Colors.white, size: 32),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: isSelected ? Colors.white : Colors.white70,
+              fontSize: 12,
+              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyEffect(LiveEffect effect) async {
+    // Reset file efek sebelumnya dan atur status loading
+    setState(() {
+      _isProcessingEffect = true;
+      _processedVideoFile = null;
+      _longExposureImageFile = null;
+    });
+
+    if (effect == LiveEffect.live) {
+      _videoCtrl?.setLooping(false);
+      setState(() => _isProcessingEffect = false);
+      _startLive();
+    } else if (effect == LiveEffect.loop) {
+      _videoCtrl?.setLooping(true);
+      setState(() => _isProcessingEffect = false);
+      _startLive(); // Otomatis main terus
+    } else if (effect == LiveEffect.bounce) {
+      // Panggil FFmpeg untuk bikin video reverse & digabung
+      final bounceFile = await VideoProcessor.generateBounce(widget.item.video);
+
+      if (bounceFile != null && mounted) {
+        setState(() {
+          _processedVideoFile = bounceFile;
+          _isProcessingEffect = false;
+        });
+        _startLive();
+      } else if (mounted) {
+        setState(() => _isProcessingEffect = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gagal menerapkan efek Bounce.')),
+        );
+      }
+    } else if (effect == LiveEffect.longExposure) {
+      // Panggil FFmpeg untuk tmix frame menjadi satu gambar estetik
+      final longExpFile = await VideoProcessor.generateLongExposure(
+        widget.item.video,
+      );
+
+      if (longExpFile != null && mounted) {
+        await _videoCtrl?.pause(); // Hentikan video jika sedang jalan
+        setState(() {
+          _longExposureImageFile = longExpFile;
+          _isProcessingEffect = false;
+          _isPlaying = false;
+        });
+      } else if (mounted) {
+        setState(() => _isProcessingEffect = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gagal menerapkan efek Long Exposure.')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onLongPressStart: (_) => _startLive(),
       onLongPressEnd: (_) => _stopLive(),
+      onVerticalDragEnd: (details) {
+        if (details.primaryVelocity! < -300) {
+          _showEffectsMenu(context);
+        }
+      },
       child: Stack(
         fit: StackFit.expand,
         children: [
+          // 1. Layer Gambar Asli
           AnimatedBuilder(
             animation: _zoomAnim,
             builder: (_, child) =>
@@ -501,7 +712,24 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
             ),
           ),
 
-          if (_videoCtrl != null && _videoCtrl!.value.isInitialized)
+          // 2. Layer Efek Long Exposure (Gambar Tumpukan Frame)
+          if (_currentEffect == LiveEffect.longExposure &&
+              _longExposureImageFile != null)
+            AnimatedBuilder(
+              animation: _zoomAnim,
+              builder: (_, child) =>
+                  Transform.scale(scale: _zoomAnim.value, child: child),
+              child: Image.file(
+                _longExposureImageFile!,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+              ),
+            ),
+
+          // 3. Layer Video (Untuk Live Asli, Loop, atau Bounce)
+          if (_videoCtrl != null &&
+              _videoCtrl!.value.isInitialized &&
+              _currentEffect != LiveEffect.longExposure)
             AnimatedBuilder(
               animation: Listenable.merge([_fadeAnim, _zoomAnim]),
               builder: (_, child) => Opacity(
@@ -516,7 +744,27 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
               ),
             ),
 
-          if (_isLoading)
+          // 4. Loading Overlay FFmpeg Pemrosesan Efek
+          if (_isProcessingEffect)
+            Container(
+              color: Colors.black54,
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      'Memproses Efek...',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // 5. Ikon Loading saat Play Video
+          if (_isLoading && !_isProcessingEffect)
             const Center(
               child: SizedBox(
                 width: 28,
@@ -528,20 +776,45 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
               ),
             ),
 
+          // Posisi Ikon Live
           Positioned(
             top: MediaQuery.of(context).padding.top + 56,
             left: 16,
             child: _isPlaying
                 ? FadeTransition(
                     opacity: _badgeOpacity,
-                    child: _LiveBadge(small: false),
+                    child: const _LiveBadge(small: false),
                   )
-                : _LiveBadge(small: false, staticOpacity: 0.85),
+                : const _LiveBadge(small: false, staticOpacity: 0.85),
+          ),
+
+          // Tombol Mute / Unmute
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 50,
+            right: 16,
+            child: IconButton(
+              icon: Icon(
+                _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                color: Colors.white,
+                size: 24,
+                shadows: const [Shadow(color: Colors.black45, blurRadius: 4)],
+              ),
+              onPressed: () {
+                setState(() {
+                  _isMuted = !_isMuted;
+                  if (_videoCtrl != null) {
+                    _videoCtrl!.setVolume(_isMuted ? 0.0 : 1.0);
+                  }
+                });
+              },
+            ),
           ),
 
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
 
-          if (!_isPlaying)
+          if (!_isPlaying &&
+              _currentEffect != LiveEffect.loop &&
+              _currentEffect != LiveEffect.bounce)
             Positioned(
               bottom: 90,
               left: 0,
@@ -569,7 +842,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
                         ),
                         SizedBox(width: 6),
                         Text(
-                          'Tahan untuk memutar',
+                          'Tahan atau Usap ke Atas',
                           style: TextStyle(
                             color: Colors.white70,
                             fontSize: 12.5,
