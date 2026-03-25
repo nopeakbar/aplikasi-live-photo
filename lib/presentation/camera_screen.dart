@@ -67,7 +67,7 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   Future<void> _loadLastPhoto() async {
-    final dir = Directory('/storage/emulated/0/Pictures/MotionPhotoApp');
+    final dir = Directory('/storage/emulated/0/Pictures/Vetecam');
     if (!await dir.exists()) return;
     final jpgs =
         dir
@@ -89,6 +89,7 @@ class _CameraScreenState extends State<CameraScreen>
 
     if (camStatus.isGranted) {
       await NativeBridge.startCameraPreview(fps: _targetFps);
+      await NativeBridge.setFlashMode(_flashMode);
       setState(() {
         _cameraReady = true;
         _statusText = '';

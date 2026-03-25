@@ -36,7 +36,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   Future<void> _loadItems() async {
     setState(() => _isLoading = true);
 
-    final dir = Directory('/storage/emulated/0/Pictures/MotionPhotoApp');
+    final dir = Directory('/storage/emulated/0/Pictures/Vetecam');
     if (!await dir.exists()) {
       setState(() => _isLoading = false);
       return;

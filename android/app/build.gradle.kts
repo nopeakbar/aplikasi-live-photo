@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.motion_photo_app"
+    namespace = "com.nopeakbar.vetecam"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -19,7 +19,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.motion_photo_app"
+        applicationId = "com.nopeakbar.vetecam"
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

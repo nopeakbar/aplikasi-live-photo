@@ -1,4 +1,4 @@
-package com.example.motion_photo_app.camera
+package com.nopeakbar.vetecam.camera
 
 import android.media.MediaCodec
 import android.media.MediaCodecInfo

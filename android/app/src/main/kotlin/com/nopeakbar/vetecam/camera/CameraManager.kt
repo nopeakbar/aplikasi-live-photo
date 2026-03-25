@@ -1,4 +1,4 @@
-package com.example.motion_photo_app.camera
+package com.nopeakbar.vetecam.camera // UBAH KE SINI
 
 import android.hardware.camera2.CaptureRequest
 import android.util.Log
@@ -9,7 +9,7 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.example.motion_photo_app.MainActivity
+import com.nopeakbar.vetecam.MainActivity // UBAH KE SINI
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -44,7 +44,7 @@ class CameraManager(private val activity: MainActivity) {
 
     // State Kamera Baru (Lens & Flash)
     private var lensFacing = CameraSelector.LENS_FACING_BACK
-    private var flashMode = ImageCapture.FLASH_MODE_AUTO
+    private var flashMode = ImageCapture.FLASH_MODE_OFF
 
     fun attachPreviewView(pv: PreviewView) {
         previewView = pv
@@ -165,7 +165,7 @@ class CameraManager(private val activity: MainActivity) {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
         val appFolder = File(
             android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
-            "MotionPhotoApp"
+            "Vetecam"
         ).also { if (!it.exists()) it.mkdirs() }
 
         // FIX #3: Suffix "_MP" dengan underscore sesuai spec Android Motion Photo format 1.0

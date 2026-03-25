@@ -1,4 +1,4 @@
-package com.example.motion_photo_app.camera
+package com.nopeakbar.vetecam.camera // UBAH KE SINI
 
 import android.content.Context
 import android.view.View

@@ -1,4 +1,4 @@
-package com.example.motion_photo_app.camera
+package com.nopeakbar.vetecam.camera // UBAH KE SINI
 
 import androidx.camera.core.ImageProxy
 import android.util.Log

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'presentation/camera_screen.dart';
+import 'presentation/splash_screen.dart'; // Import file splash screen baru
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,12 +12,15 @@ class MotionPhotoApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Motion Photo Clone',
+      title: 'Vetecam', // Ubah title menjadi nama aplikasimu
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const CameraScreen(),
+      debugShowCheckedModeBanner:
+          false, // Menghilangkan tulisan "DEBUG" di pojok kanan atas
+      home:
+          const SplashScreen(), // Ubah home agar memuat SplashScreen lebih dulu
     );
   }
 }

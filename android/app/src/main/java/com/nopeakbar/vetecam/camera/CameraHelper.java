@@ -1,4 +1,4 @@
-package com.example.motion_photo_app.camera;
+package com.nopeakbar.vetecam.camera;
 
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import android.content.Context;
