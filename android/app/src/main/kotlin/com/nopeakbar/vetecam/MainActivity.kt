@@ -1,16 +1,14 @@
-package com.nopeakbar.vetecam // UBAH KE SINI
+package com.nopeakbar.vetecam
 
 import androidx.annotation.NonNull
-import com.nopeakbar.vetecam.camera.CameraManager // UBAH KE SINI
-import com.nopeakbar.vetecam.camera.CameraPreviewFactory // UBAH KE SINI
+import com.nopeakbar.vetecam.camera.CameraManager
+import com.nopeakbar.vetecam.camera.CameraPreviewFactory
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
-    // Kamu bisa biarkan ini tetap com.akbar.motionphoto atau samakan ke com.nopeakbar.vetecam
-    // Yang penting di sisi Dart (Flutter) kodenya juga harus sama.
     private val CHANNEL = "com.akbar.motionphoto/camera" 
     private lateinit var cameraManager: CameraManager
 
@@ -47,6 +45,12 @@ class MainActivity : FlutterActivity() {
                     val mode = call.argument<Int>("mode") ?: 0
                     cameraManager.setFlashMode(mode)
                     result.success("Flash diubah ke $mode")
+                }
+                // ── TAMBAHAN UNTUK ULTRAWIDE ──
+                "setZoomRatio" -> {
+                    val ratio = call.argument<Double>("ratio")?.toFloat() ?: 1.0f
+                    cameraManager.setZoomRatio(ratio)
+                    result.success("Zoom diatur ke $ratio")
                 }
                 else -> result.notImplemented()
             }

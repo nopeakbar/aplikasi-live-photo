@@ -9,7 +9,26 @@ import java.io.File
 
 class VideoEncoder {
 
-    fun encodeToMp4(frames: List<VideoFrame>, outputFile: File) {
+    // ── FIX #1: Terima targetFps sebagai parameter ────────────────────────────
+    //
+    // BUG ASLI: KEY_FRAME_RATE dan KEY_MAX_FPS_TO_ENCODER selalu hardcode ke 60,
+    // bahkan ketika user memilih mode 30fps. Ini menyebabkan dua masalah:
+    //
+    //   (a) Di mode 30fps, encoder mendeklarasikan video sebagai 60fps ke dalam
+    //       container MP4. Saat diputar, pemutar memakai frame-rate header MP4
+    //       (60fps) untuk menghitung presentasi frame — padahal PTS dari frame
+    //       aslinya berjarak ~33ms (bukan ~16ms). Hasilnya video terasa lambat
+    //       atau seekbar tidak sinkron dengan gerakan.
+    //
+    //   (b) Di mode 60fps, KEY_FRAME_RATE=60 sudah benar, tapi KEY_MAX_FPS_TO_ENCODER
+    //       (API 29+) yang juga hardcode 60 tidak bisa mengadaptasi jika hardware
+    //       sensor ternyata hanya deliver 30fps di mode tertentu.
+    //
+    // Solusi: Hitung FPS aktual dari timestamp frame, lalu gunakan itu sebagai
+    // frame-rate hint ke encoder — bukan targetFps mentah, bukan hardcode 60.
+    // targetFps dipakai sebagai batas atas (clamp) dan nilai default jika
+    // jumlah frame terlalu sedikit untuk dihitung.
+    fun encodeToMp4(frames: List<VideoFrame>, outputFile: File, targetFps: Int = 30) {
         if (frames.isEmpty()) {
             Log.e("VideoEncoder", "Tidak ada frame!")
             return
@@ -21,7 +40,28 @@ class VideoEncoder {
         val alignedHeight = alignTo16(height)
 
         val totalDurationMs = frames.last().timestampMs - frames.first().timestampMs
-        Log.d("VideoEncoder", "Encode ${frames.size} frame, durasi=${totalDurationMs}ms")
+
+        // ── FIX #2: Hitung FPS aktual dari timestamp frame ───────────────────
+        //
+        // Jika video direkam di 60fps, interval antar-frame = ~16ms.
+        // Jika 30fps, interval ~33ms. MediaCodec perlu frame-rate yang akurat
+        // agar bitrate controller dan reference frame prediction bekerja optimal.
+        //
+        // Rumus: actualFps = (jumlah_frame - 1) / durasi_detik
+        // Gunakan frames.size - 1 (bukan frames.size) karena durasi dihitung
+        // dari first→last, bukan first→(last+1).
+        val actualFps: Int = if (frames.size > 1 && totalDurationMs > 0) {
+            val computed = ((frames.size - 1) * 1000.0 / totalDurationMs).toInt()
+            // Clamp: minimal 15fps (hindari encoder error), maksimal targetFps+5
+            // (toleransi kecil agar tidak dikurangi karena jitter timestamp)
+            computed.coerceIn(15, targetFps + 5)
+        } else {
+            // Tidak cukup data — gunakan targetFps sebagai fallback
+            targetFps
+        }
+
+        Log.d("VideoEncoder", "Encode ${frames.size} frame, durasi=${totalDurationMs}ms, " +
+                "targetFps=$targetFps, actualFps=$actualFps")
 
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
@@ -38,13 +78,21 @@ class VideoEncoder {
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
             )
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 12_000_000)  // 12Mbps
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)         // ✅ hardcode 60 sebagai hint
+
+            // ── FIX #3: Bitrate adaptif sesuai FPS ───────────────────────────
+            // Di 60fps kita butuh lebih banyak bit per detik agar kualitas tidak
+            // turun (lebih banyak frame per detik = lebih banyak data).
+            // Di 30fps, 8Mbps sudah lebih dari cukup untuk 720p.
+            val bitrate = if (actualFps >= 50) 16_000_000 else 8_000_000
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+
+            // ── FIX #4: Gunakan actualFps (bukan hardcode 60) ────────────────
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, actualFps)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
 
-            // ✅ API 29+ check — tidak crash di Android < 10
+            // ── FIX #5: KEY_MAX_FPS_TO_ENCODER pakai actualFps (API 29+) ─────
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                format.setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, 60f)
+                format.setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, actualFps.toFloat())
             }
 
             encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -61,7 +109,7 @@ class VideoEncoder {
                 val frame  = frames[i]
                 val isLast = (i == frames.size - 1)
 
-                // ✅ PTS dari hardware timestamp — akurat, reflect timing nyata
+                // PTS dari hardware timestamp — akurat, reflect timing nyata
                 val ptsUs = (frame.timestampMs - baseTs) * 1000L
 
                 val paddedData = padFrameIfNeeded(
@@ -103,7 +151,8 @@ class VideoEncoder {
                 }
             }
 
-            Log.d("VideoEncoder", "✅ Done! ${frames.size} frame, ${totalDurationMs}ms")
+            Log.d("VideoEncoder", "✅ Done! ${frames.size} frame, ${totalDurationMs}ms, " +
+                    "fps=${actualFps}, bitrate=${bitrate/1_000_000}Mbps")
 
         } catch (e: Exception) {
             Log.e("VideoEncoder", "Error encoding", e)

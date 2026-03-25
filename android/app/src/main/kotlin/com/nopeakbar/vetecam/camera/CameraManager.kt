@@ -1,4 +1,4 @@
-package com.nopeakbar.vetecam.camera // UBAH KE SINI
+package com.nopeakbar.vetecam.camera
 
 import android.hardware.camera2.CaptureRequest
 import android.util.Log
@@ -9,7 +9,7 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.nopeakbar.vetecam.MainActivity // UBAH KE SINI
+import com.nopeakbar.vetecam.MainActivity
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -22,6 +22,10 @@ class CameraManager(private val activity: MainActivity) {
     private var imageAnalyzer: ImageAnalysis? = null
     private var preview: Preview? = null
     private var previewView: PreviewView? = null
+
+    // ── TAMBAHAN UNTUK ULTRAWIDE ──
+    private var camera: Camera? = null
+    @Volatile private var currentZoomRatio: Float = 1.0f
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -42,9 +46,11 @@ class CameraManager(private val activity: MainActivity) {
     private var activePhotoFile: File? = null
     private var activeVideoFile: File? = null
 
-    // State Kamera Baru (Lens & Flash)
+    // State Kamera
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var flashMode = ImageCapture.FLASH_MODE_OFF
+
+    @Volatile private var currentFps: Int = 30
 
     fun attachPreviewView(pv: PreviewView) {
         previewView = pv
@@ -64,7 +70,9 @@ class CameraManager(private val activity: MainActivity) {
         } else {
             CameraSelector.LENS_FACING_BACK
         }
-        startCamera(30)
+        // TAMBAHAN: Reset zoom ke 1.0 setiap flip kamera
+        currentZoomRatio = 1.0f 
+        startCamera(currentFps)
     }
 
     fun setFlashMode(mode: Int) {
@@ -72,14 +80,46 @@ class CameraManager(private val activity: MainActivity) {
         imageCapture?.flashMode = flashMode
     }
 
+    // ── TAMBAHAN UNTUK ULTRAWIDE ──
+    fun setZoomRatio(ratio: Float) {
+        camera?.cameraInfo?.zoomState?.value?.let { zoomState ->
+            val minZoom = zoomState.minZoomRatio
+            val maxZoom = zoomState.maxZoomRatio
+            Log.d("CameraManager", "Batas Zoom HP ini -> Min: $minZoom, Max: $maxZoom")
+
+            // Paksa nilai zoom ke batas terkecil yang didukung HP
+            // Jika user minta 0.5 (ultrawide), pakai minZoom bawaan HP (bisa 0.5 atau 0.6)
+            // Jika user minta 1.0 (wide biasa), kembalikan ke 1.0
+            val targetZoom = if (ratio < 1.0f) minZoom else 1.0f
+
+            currentZoomRatio = targetZoom
+            camera?.cameraControl?.let { control ->
+                CameraHelper.setZoomRatio(control, targetZoom)
+            }
+            
+            Log.d("CameraManager", "Zoom sukses diatur ke: $targetZoom")
+        } ?: run {
+            Log.e("CameraManager", "Gagal set zoom: State kamera belum siap!")
+        }
+    }
+        
+
     fun startCamera(targetFps: Int = 30) {
+        currentFps = targetFps
+
         CameraHelper.getProvider(
             activity,
             ContextCompat.getMainExecutor(activity),
             object : CameraHelper.CameraProviderCallback {
                 override fun onAvailable(cameraProvider: ProcessCameraProvider) {
 
-                    preview = Preview.Builder().build().also { prev ->
+                    val previewBuilder = Preview.Builder()
+                    Camera2Interop.Extender(previewBuilder)
+                        .setCaptureRequestOption(
+                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                            Range(targetFps, targetFps)
+                        )
+                    preview = previewBuilder.build().also { prev ->
                         previewView?.let { prev.setSurfaceProvider(it.surfaceProvider) }
                     }
 
@@ -121,13 +161,19 @@ class CameraManager(private val activity: MainActivity) {
 
                     try {
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        // TAMBAHAN: Bind camera dan terapkan zoom
+                        camera = cameraProvider.bindToLifecycle(
                             activity,
                             CameraSelector.Builder().requireLensFacing(lensFacing).build(),
                             preview,
                             imageCapture,
                             imageAnalyzer
                         )
+                        
+                        camera?.cameraControl?.let { control ->
+                            CameraHelper.setZoomRatio(control, currentZoomRatio)
+                        }
+
                         Log.d("CameraManager", "✅ Kamera $targetFps FPS + Preview siap! Lens: $lensFacing")
                     } catch (e: Exception) {
                         Log.e("CameraManager", "Gagal bindToLifecycle", e)
@@ -168,12 +214,7 @@ class CameraManager(private val activity: MainActivity) {
             "Vetecam"
         ).also { if (!it.exists()) it.mkdirs() }
 
-        // FIX #3: Suffix "_MP" dengan underscore sesuai spec Android Motion Photo format 1.0
-        // Contoh referensi dari research: IMG_20261012_105230_MP.jpg
-        // Underscore sebelum "MP" mengaktifkan legacy fallback detection di Samsung Gallery.
         val photoFile = File(appFolder, "IMG_${timestamp}_MP.jpg")
-
-        // Hidden file untuk video sementara agar tidak muncul di galeri sebagai video terpisah
         val videoFile = File(appFolder, ".VID_${timestamp}_MP.mp4")
 
         activePhotoFile = photoFile
@@ -208,34 +249,42 @@ class CameraManager(private val activity: MainActivity) {
             isPhotoSaved = false
             isPostCaptureDone = false
 
+            val capturedFps = currentFps
+
             Thread {
                 val postFrames = postBuffer.getBufferSnapshot()
                 val allFrames  = preFramesSnapshot + postFrames
 
                 if (allFrames.size > 1) {
                     val durMs = allFrames.last().timestampMs - allFrames.first().timestampMs
-                    Log.d("CameraManager", "Mulai Encode: Total ${allFrames.size} frame, durasi=${durMs}ms")
+                    Log.d("CameraManager", "Mulai Encode: Total ${allFrames.size} frame, " +
+                            "durasi=${durMs}ms, targetFps=$capturedFps")
                 }
 
                 try {
-                    // 1. Encode video ke hidden file .mp4
-                    VideoEncoder().encodeToMp4(allFrames, videoFile)
+                    val presentationTimestampUs: Long = if (preFramesSnapshot.size >= 2) {
+                        val preDurMs = preFramesSnapshot.last().timestampMs -
+                                       preFramesSnapshot.first().timestampMs
+                        maxOf(0L, preDurMs) * 1000L
+                    } else {
+                        1_500_000L
+                    }
 
-                    // 2. Muxing: Gabungkan MP4 ke dalam JPEG dengan XMP Motion Photo V1
-                    //    (GCamera:MotionPhoto + Container:Directory yang benar)
-                    MotionPhotoMuxer.mux(photoFile, videoFile)
+                    Log.d("CameraManager", "presentationTimestampUs=$presentationTimestampUs µs " +
+                            "(${presentationTimestampUs / 1000} ms ke dalam video)")
 
-                    // 3. Scan file gabungan ke MediaStore SETELAH muxing selesai.
-                    //    null mimeType → MediaScanner auto-detect, lebih reliable di One UI 6+
+                    VideoEncoder().encodeToMp4(allFrames, videoFile, capturedFps)
+                    MotionPhotoMuxer.mux(photoFile, videoFile, presentationTimestampUs)
+
                     android.media.MediaScannerConnection.scanFile(
                         activity,
                         arrayOf(photoFile.absolutePath),
-                        null  // null = biarkan scanner detect MIME sendiri dari konten file
+                        null
                     ) { path, uri ->
                         Log.d("CameraManager", "✅ MediaStore scan selesai: $path | URI: $uri")
                     }
 
-                    Log.d("CameraManager", "✅ Native Motion Photo selesai & Siap dibaca Galeri Samsung/Google Photos!")
+                    Log.d("CameraManager", "✅ Native Motion Photo selesai & Siap dibaca Galeri!")
 
                 } catch (e: Exception) {
                     Log.e("CameraManager", "Error encode/muxing", e)

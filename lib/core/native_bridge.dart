@@ -40,4 +40,13 @@ class NativeBridge {
       print("Gagal set flash: $e");
     }
   }
+
+  // ── TAMBAHAN UNTUK ULTRAWIDE ──
+  static Future<void> setZoomRatio(double ratio) async {
+    try {
+      await _channel.invokeMethod('setZoomRatio', {'ratio': ratio});
+    } catch (e) {
+      print("Gagal set zoom: $e");
+    }
+  }
 }

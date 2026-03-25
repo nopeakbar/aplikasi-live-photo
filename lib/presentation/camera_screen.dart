@@ -25,10 +25,13 @@ class _CameraScreenState extends State<CameraScreen>
   bool _isLiveEnabled = true;
   int _flashMode = 2; // 0: Auto, 1: On, 2: Off
 
+  // ── TAMBAHAN UNTUK ULTRAWIDE ──
+  double _currentZoom = 1.0;
+
   // ── State Fitur Baru ──
-  bool _showGrid = false; // Toggle Grid 3x3
+  bool _showGrid = false;
   int _timerSetting = 0; // 0: Off, 3: 3 detik, 10: 10 detik
-  int _currentCountdown = 0; // Angka yang tampil di tengah layar
+  int _currentCountdown = 0;
 
   late AnimationController _shutterAnim;
   late Animation<double> _shutterScale;
@@ -44,6 +47,7 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
       duration: const Duration(milliseconds: 120),
     );
+
     _shutterScale = Tween<double>(
       begin: 1.0,
       end: 0.88,
@@ -53,6 +57,7 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+
     _liveOpacity = Tween<double>(begin: 0.4, end: 1.0).animate(_liveAnim);
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _startKamera());
@@ -99,13 +104,30 @@ class _CameraScreenState extends State<CameraScreen>
     }
   }
 
+  Future<void> _restartCamera() async {
+    if (!mounted) return;
+    setState(() {
+      _cameraReady = false;
+      _statusText = 'Memulai ulang kamera...';
+    });
+    await NativeBridge.startCameraPreview(fps: _targetFps);
+    await NativeBridge.setFlashMode(_flashMode);
+
+    if (mounted) {
+      setState(() {
+        _cameraReady = true;
+        _statusText = '';
+      });
+    }
+  }
+
   void _toggleFps() {
     HapticFeedback.selectionClick();
     setState(() {
       _targetFps = _targetFps == 30 ? 60 : 30;
       _cameraReady = false;
     });
-    _startKamera();
+    _restartCamera();
   }
 
   void _toggleFlash() {
@@ -124,21 +146,34 @@ class _CameraScreenState extends State<CameraScreen>
     setState(() {
       if (_timerSetting == 0) {
         _timerSetting = 3;
-      } else if (_timerSetting == 3)
+      } else if (_timerSetting == 3) {
         _timerSetting = 10;
-      else
+      } else {
         _timerSetting = 0;
+      }
     });
   }
 
-  void _flipCamera() async {
-    HapticFeedback.lightImpact();
-    setState(() => _cameraReady = false);
-    await NativeBridge.switchCamera();
-    setState(() => _cameraReady = true);
+  // ── TAMBAHAN UNTUK ULTRAWIDE ──
+  void _toggleZoom() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _currentZoom = _currentZoom == 1.0 ? 0.5 : 1.0;
+    });
+    NativeBridge.setZoomRatio(_currentZoom);
   }
 
-  // ── Logika Jepret dengan Timer ──
+  Future<void> _flipCamera() async {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _cameraReady = false;
+      _currentZoom = 1.0; // Reset zoom ke 1.0 setiap flip kamera
+    });
+    await NativeBridge.switchCamera();
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (mounted) setState(() => _cameraReady = true);
+  }
+
   Future<void> _jepret() async {
     if (_isCapturing || !_cameraReady || _currentCountdown > 0) return;
 
@@ -152,7 +187,6 @@ class _CameraScreenState extends State<CameraScreen>
 
   void _mulaiHitungMundur() {
     setState(() => _currentCountdown = _timerSetting);
-
     Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_currentCountdown == 1) {
         timer.cancel();
@@ -243,7 +277,41 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // 7. Bottom Controls
+          // ── 7. TAMBAHAN: Tombol Zoom (1x / 0.5x) ──
+          if (_cameraReady)
+            Positioned(
+              bottom: 140, // Berada pas di atas bottom bar
+              left: 0,
+              right: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: _toggleZoom,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white30, width: 1),
+                    ),
+                    child: Text(
+                      _currentZoom == 1.0 ? '1x' : '0.5x',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // 8. Bottom Controls
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
         ],
       ),
@@ -275,7 +343,6 @@ class _CameraScreenState extends State<CameraScreen>
     );
   }
 
-  // ── Widget Grid Garis 3x3 ──
   Widget _buildGridOverlay() {
     return IgnorePointer(
       child: Column(
@@ -325,7 +392,6 @@ class _CameraScreenState extends State<CameraScreen>
       ),
       child: Column(
         children: [
-          // Baris 1: Fitur Kamera (Flash, Live, Timer, Grid)
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -351,7 +417,7 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleTimer,
               ),
 
-              // Live Toggle Button di Tengah Atas
+              // Live Toggle Button
               GestureDetector(
                 onTap: () {
                   HapticFeedback.selectionClick();
@@ -402,7 +468,7 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleGrid,
               ),
 
-              // FPS Toggle Button dipindah jadi icon kecil
+              // FPS Toggle Button
               GestureDetector(
                 onTap: _toggleFps,
                 child: Container(
@@ -411,14 +477,18 @@ class _CameraScreenState extends State<CameraScreen>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    border: Border.all(color: Colors.white54),
+                    border: Border.all(
+                      color: _targetFps == 60 ? Colors.yellow : Colors.white54,
+                    ),
                     borderRadius: BorderRadius.circular(8),
-                    color: Colors.white12,
+                    color: _targetFps == 60
+                        ? Colors.yellow.withOpacity(0.15)
+                        : Colors.white12,
                   ),
                   child: Text(
-                    '${_targetFps}p',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    '${_targetFps}fps',
+                    style: TextStyle(
+                      color: _targetFps == 60 ? Colors.yellow : Colors.white,
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
                     ),
@@ -513,13 +583,12 @@ class _CameraScreenState extends State<CameraScreen>
             ),
           ),
 
-          // ── Tengah: Tombol Shutter Ala iOS ──
+          // ── Tengah: Tombol Shutter ──
           GestureDetector(
             onTap: _jepret,
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Ring luar (Putih transparan)
                 Container(
                   width: 72,
                   height: 72,
@@ -528,7 +597,6 @@ class _CameraScreenState extends State<CameraScreen>
                     border: Border.all(color: Colors.white54, width: 4),
                   ),
                 ),
-                // Tombol dalam yang mengecil pas ditekan
                 ScaleTransition(
                   scale: _shutterScale,
                   child: Container(
@@ -559,7 +627,7 @@ class _CameraScreenState extends State<CameraScreen>
             child: Container(
               width: 48,
               height: 48,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 shape: BoxShape.circle,
                 color: Colors.white12,
               ),
