@@ -20,22 +20,26 @@ class _CameraScreenState extends State<CameraScreen>
   String _statusText = '';
   File? _lastPhoto;
 
-  // ── State Pengaturan Kamera ──
+  // ── Camera settings ──────────────────────────────────────────────────────
   int _targetFps = 30;
   bool _isLiveEnabled = true;
   int _flashMode = 2; // 0: Auto, 1: On, 2: Off
 
-  // ── TAMBAHAN UNTUK ULTRAWIDE ──
-  double _currentZoom = 1.0;
+  // ── Ultrawide / zoom state ───────────────────────────────────────────────
+  // _ultrawideSupported: set once at init from native hardware query.
+  // _minZoomRatio: the actual min zoom of this device (0.5, 0.6, etc.).
+  // _isUltrawide: whether the current session is in ultrawide mode.
+  bool _ultrawideSupported = false;
+  double _minZoomRatio = 0.5;
+  bool _isUltrawide = false;
 
-  // ── State Fitur Baru ──
+  // ── Other features ───────────────────────────────────────────────────────
   bool _showGrid = false;
-  int _timerSetting = 0; // 0: Off, 3: 3 detik, 10: 10 detik
+  int _timerSetting = 0;
   int _currentCountdown = 0;
 
   late AnimationController _shutterAnim;
   late Animation<double> _shutterScale;
-
   late AnimationController _liveAnim;
   late Animation<double> _liveOpacity;
 
@@ -47,7 +51,6 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
       duration: const Duration(milliseconds: 120),
     );
-
     _shutterScale = Tween<double>(
       begin: 1.0,
       end: 0.88,
@@ -57,7 +60,6 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
-
     _liveOpacity = Tween<double>(begin: 0.4, end: 1.0).animate(_liveAnim);
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _startKamera());
@@ -87,20 +89,30 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   Future<void> _startKamera() async {
-    setState(() => _statusText = 'Meminta izin...');
+    setState(() => _statusText = 'Requesting permissions...');
     final camStatus = await Permission.camera.request();
     await Permission.storage.request();
     await Permission.manageExternalStorage.request();
 
-    if (camStatus.isGranted) {
-      await NativeBridge.startCameraPreview(fps: _targetFps);
-      await NativeBridge.setFlashMode(_flashMode);
+    if (!camStatus.isGranted) {
+      setState(() => _statusText = 'Camera permission denied');
+      return;
+    }
+
+    await NativeBridge.startCameraPreview(fps: _targetFps);
+    await NativeBridge.setFlashMode(_flashMode);
+
+    // Query ultrawide support from native hardware AFTER camera starts.
+    // This ensures CameraManager has the correct lensFacing set.
+    final info = await NativeBridge.getUltrawideInfo();
+
+    if (mounted) {
       setState(() {
         _cameraReady = true;
         _statusText = '';
+        _ultrawideSupported = info.supported;
+        _minZoomRatio = info.minZoom;
       });
-    } else {
-      setState(() => _statusText = 'Izin kamera ditolak');
     }
   }
 
@@ -108,15 +120,20 @@ class _CameraScreenState extends State<CameraScreen>
     if (!mounted) return;
     setState(() {
       _cameraReady = false;
-      _statusText = 'Memulai ulang kamera...';
+      _statusText = 'Restarting camera...';
     });
     await NativeBridge.startCameraPreview(fps: _targetFps);
     await NativeBridge.setFlashMode(_flashMode);
+
+    // Re-query ultrawide info in case facing changed
+    final info = await NativeBridge.getUltrawideInfo();
 
     if (mounted) {
       setState(() {
         _cameraReady = true;
         _statusText = '';
+        _ultrawideSupported = info.supported;
+        _minZoomRatio = info.minZoom;
       });
     }
   }
@@ -154,24 +171,66 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  // ── TAMBAHAN UNTUK ULTRAWIDE ──
-  void _toggleZoom() {
+  // ── FIXED: zoom toggle ────────────────────────────────────────────────────
+  // FIX: The previous implementation changed _currentZoom state and called
+  // NativeBridge.setZoomRatio() without any feedback loop. The user saw "0.5x"
+  // in the UI but the camera never switched because:
+  //   1. The native reflection call failed silently.
+  //   2. There was no loading state — the user couldn't tell if the switch
+  //      was in progress.
+  //
+  // NEW behavior:
+  //   1. Toggle _isUltrawide flag.
+  //   2. Show loading state (_cameraReady = false) while the session restarts.
+  //   3. Call setZoomRatio() with the correct signal value:
+  //        - 0.5 means "switch to ultrawide" (native maps this to actual minZoom)
+  //        - 1.0 means "return to main lens"
+  //   4. Wait for the session restart, then re-enable the preview.
+  //
+  // The brief "camera restarting" flash is intentional and expected — switching
+  // to a different physical sensor requires a full session teardown + rebuild.
+  void _toggleZoom() async {
+    if (!_ultrawideSupported) return;
     HapticFeedback.selectionClick();
+
+    final newIsUltrawide = !_isUltrawide;
+
     setState(() {
-      _currentZoom = _currentZoom == 1.0 ? 0.5 : 1.0;
+      _isUltrawide = newIsUltrawide;
+      _cameraReady = false;
     });
-    NativeBridge.setZoomRatio(_currentZoom);
+
+    // Pass 0.5 as the "use ultrawide" signal, or 1.0 as "use main lens".
+    // Native side reads CONTROL_ZOOM_RATIO_RANGE.lower from CameraCharacteristics
+    // and uses the actual device min zoom — ignoring the exact value we pass.
+    await NativeBridge.setZoomRatio(newIsUltrawide ? 0.5 : 1.0);
+
+    // Give the camera session a moment to restart before re-enabling the preview.
+    // startCamera() is asynchronous on the native side; we wait for it to settle.
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (mounted) {
+      setState(() => _cameraReady = true);
+    }
   }
 
   Future<void> _flipCamera() async {
     HapticFeedback.lightImpact();
     setState(() {
       _cameraReady = false;
-      _currentZoom = 1.0; // Reset zoom ke 1.0 setiap flip kamera
+      _isUltrawide = false; // Reset zoom on camera flip
     });
     await NativeBridge.switchCamera();
     await Future.delayed(const Duration(milliseconds: 600));
-    if (mounted) setState(() => _cameraReady = true);
+
+    // Re-query ultrawide support for the new facing direction
+    final info = await NativeBridge.getUltrawideInfo();
+    if (mounted) {
+      setState(() {
+        _cameraReady = true;
+        _ultrawideSupported = info.supported;
+        _minZoomRatio = info.minZoom;
+      });
+    }
   }
 
   Future<void> _jepret() async {
@@ -181,7 +240,6 @@ class _CameraScreenState extends State<CameraScreen>
       _mulaiHitungMundur();
       return;
     }
-
     await _eksekusiJepret();
   }
 
@@ -205,11 +263,10 @@ class _CameraScreenState extends State<CameraScreen>
 
     setState(() {
       _isCapturing = _isLiveEnabled;
-      _statusText = _isLiveEnabled ? 'Merekam...' : '';
+      _statusText = _isLiveEnabled ? 'Recording...' : '';
     });
 
     await NativeBridge.captureMotionPhoto(isLive: _isLiveEnabled);
-
     await Future.delayed(Duration(milliseconds: _isLiveEnabled ? 3000 : 500));
     await _loadLastPhoto();
 
@@ -221,6 +278,8 @@ class _CameraScreenState extends State<CameraScreen>
     }
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -228,7 +287,7 @@ class _CameraScreenState extends State<CameraScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. Preview Kamera
+          // 1. Camera preview
           _cameraReady
               ? const AndroidView(
                   viewType: 'com.akbar.motionphoto/camera_preview',
@@ -236,13 +295,13 @@ class _CameraScreenState extends State<CameraScreen>
                 )
               : _buildPlaceholder(),
 
-          // 2. Grid Overlay (Garis 3x3)
+          // 2. Grid overlay
           if (_showGrid) _buildGridOverlay(),
 
-          // 3. Top Bar Menu
+          // 3. Top bar
           Positioned(top: 0, left: 0, right: 0, child: _buildTopBar()),
 
-          // 4. Status Chip (Merekam / Izin)
+          // 4. Status chip
           if (_statusText.isNotEmpty)
             Positioned(
               top: 100,
@@ -251,7 +310,7 @@ class _CameraScreenState extends State<CameraScreen>
               child: Center(child: _buildStatusChip()),
             ),
 
-          // 5. Angka Timer Raksasa Tengah Layar
+          // 5. Countdown overlay
           if (_currentCountdown > 0)
             Center(
               child: Text(
@@ -265,7 +324,7 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // 6. Flash Putih saat Jepret
+          // 6. Recording flash
           if (_isCapturing && _isLiveEnabled)
             Positioned.fill(
               child: IgnorePointer(
@@ -277,10 +336,15 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // ── 7. TAMBAHAN: Tombol Zoom (1x / 0.5x) ──
-          if (_cameraReady)
+          // 7. Zoom toggle button (only shown when ultrawide is supported)
+          //
+          // FIX: The button is now:
+          //   - Hidden entirely when ultrawide is not supported on this device.
+          //   - Shows the real zoom label from hardware (e.g. "0.6x" if minZoom=0.6).
+          //   - Disabled during camera restart (opacity feedback).
+          if (_cameraReady && _ultrawideSupported)
             Positioned(
-              bottom: 140, // Berada pas di atas bottom bar
+              bottom: 140,
               left: 0,
               right: 0,
               child: Center(
@@ -293,12 +357,20 @@ class _CameraScreenState extends State<CameraScreen>
                       vertical: 8,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black54,
+                      color: _isUltrawide
+                          ? Colors.white.withOpacity(0.25)
+                          : Colors.black54,
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white30, width: 1),
+                      border: Border.all(
+                        color: _isUltrawide ? Colors.white70 : Colors.white30,
+                        width: 1,
+                      ),
                     ),
                     child: Text(
-                      _currentZoom == 1.0 ? '1x' : '0.5x',
+                      // Show the real device min zoom label or "1x"
+                      _isUltrawide
+                          ? '${_minZoomRatio.toStringAsFixed(1)}x'
+                          : '1x',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w600,
@@ -311,7 +383,7 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // 8. Bottom Controls
+          // 8. Bottom controls
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
         ],
       ),
@@ -331,7 +403,7 @@ class _CameraScreenState extends State<CameraScreen>
           ),
           const SizedBox(height: 16),
           Text(
-            _statusText.isEmpty ? 'Memulai kamera...' : _statusText,
+            _statusText.isEmpty ? 'Starting camera...' : _statusText,
             style: const TextStyle(
               color: Color(0xFF555555),
               fontSize: 13,
@@ -417,7 +489,7 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleTimer,
               ),
 
-              // Live Toggle Button
+              // Live toggle
               GestureDetector(
                 onTap: () {
                   HapticFeedback.selectionClick();
@@ -468,7 +540,7 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleGrid,
               ),
 
-              // FPS Toggle Button
+              // FPS toggle
               GestureDetector(
                 onTap: _toggleFps,
                 child: Container(
@@ -556,7 +628,7 @@ class _CameraScreenState extends State<CameraScreen>
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // ── Kiri: Thumbnail Galeri ──
+          // Gallery thumbnail
           GestureDetector(
             onTap: () async {
               await Navigator.push(
@@ -583,7 +655,7 @@ class _CameraScreenState extends State<CameraScreen>
             ),
           ),
 
-          // ── Tengah: Tombol Shutter ──
+          // Shutter
           GestureDetector(
             onTap: _jepret,
             child: Stack(
@@ -621,7 +693,7 @@ class _CameraScreenState extends State<CameraScreen>
             ),
           ),
 
-          // ── Kanan: Tombol Flip Kamera ──
+          // Flip camera
           GestureDetector(
             onTap: _flipCamera,
             child: Container(

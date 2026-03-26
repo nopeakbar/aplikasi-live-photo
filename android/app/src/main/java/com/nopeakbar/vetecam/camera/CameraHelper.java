@@ -33,13 +33,18 @@ public class CameraHelper {
         }
     }
 
-    // ── KITA KEMBALI PAKAI REFLECTION AGAR LOLOS COMPILER ──
-    public static void setZoomRatio(Object cameraControl, float ratio) {
-        try {
-            Method setZoomRatio = cameraControl.getClass().getMethod("setZoomRatio", float.class);
-            setZoomRatio.invoke(cameraControl, ratio);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
+    // NOTE: setZoomRatio() was removed.
+    //
+    // The previous implementation used Java reflection to call CameraControl.setZoomRatio(),
+    // which caused a silent failure for two reasons:
+    //   1. CameraControl.setZoomRatio() returns ListenableFuture<Void>, not void.
+    //      The reflection call cannot find a method with a void return type, so it
+    //      threw an exception that was silently swallowed by the catch block.
+    //   2. Even if the call succeeded, setting zoom post-session via CameraControl
+    //      does not reliably trigger physical ultrawide lens switching on all devices.
+    //
+    // The correct approach (used in CameraManager.setZoomRatio()) is to set
+    // CaptureRequest.CONTROL_ZOOM_RATIO via Camera2Interop at session build time.
+    // This tells the HAL to route the optical path through the ultrawide sensor
+    // before the CameraCaptureSession is even opened. No reflection needed.
 }

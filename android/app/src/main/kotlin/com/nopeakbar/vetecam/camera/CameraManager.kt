@@ -1,9 +1,13 @@
 package com.nopeakbar.vetecam.camera
 
+import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.util.Log
 import android.util.Range
 import android.util.Size
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -22,14 +26,17 @@ class CameraManager(private val activity: MainActivity) {
     private var imageAnalyzer: ImageAnalysis? = null
     private var preview: Preview? = null
     private var previewView: PreviewView? = null
-
-    // ── TAMBAHAN UNTUK ULTRAWIDE ──
     private var camera: Camera? = null
+
+    // ── Zoom state ──────────────────────────────────────────────────────────
     @Volatile private var currentZoomRatio: Float = 1.0f
+
+    // ── Physical Ultrawide State (Hybrid Logic) ─────────────────────────────
+    private var physicalUwId: String? = null
+    private var isUsingPhysicalUw = false
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
-    // Buffer berbasis waktu (1500ms)
     private val preBuffer  = CircularBuffer(1500L)
     private val postBuffer = CircularBuffer(1500L)
 
@@ -37,21 +44,43 @@ class CameraManager(private val activity: MainActivity) {
     private val POST_DURATION_MS = 1500L
     private var postCaptureStartMs = 0L
 
-    // State pencegah Race Condition
     @Volatile private var isPhotoSaved = false
     @Volatile private var isPostCaptureDone = false
     private var preFramesSnapshot: List<VideoFrame> = emptyList()
 
-    // Penampung file sementara
     private var activePhotoFile: File? = null
     private var activeVideoFile: File? = null
 
-    // State Kamera
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var flashMode = ImageCapture.FLASH_MODE_OFF
 
     @Volatile private var currentFps: Int = 30
 
+    // ── Preview attachment ───────────────────────────────────────────────────
+
+    fun debugPrintAllCameraInfo() {
+        val camManager = activity.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        try {
+            Log.d("CameraDebug", "=== MULAI CEK KAMERA FISIK ===")
+            for (id in camManager.cameraIdList) {
+                val chars = camManager.getCameraCharacteristics(id)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                
+                val facingStr = when (facing) {
+                    CameraCharacteristics.LENS_FACING_BACK -> "BELAKANG"
+                    CameraCharacteristics.LENS_FACING_FRONT -> "DEPAN"
+                    else -> "LAINNYA"
+                }
+                
+                Log.d("CameraDebug", "📸 ID: $id | Posisi: $facingStr | Focal Length: ${focalLengths?.contentToString()} mm")
+            }
+            Log.d("CameraDebug", "=== SELESAI CEK KAMERA FISIK ===")
+        } catch (e: Exception) {
+            Log.e("CameraDebug", "Error ngecek kamera", e)
+        }
+    }
+    
     fun attachPreviewView(pv: PreviewView) {
         previewView = pv
         preview?.setSurfaceProvider(pv.surfaceProvider)
@@ -64,14 +93,16 @@ class CameraManager(private val activity: MainActivity) {
         Log.d("CameraManager", "PreviewView detached")
     }
 
+    // ── Camera control ───────────────────────────────────────────────────────
+
     fun switchCamera() {
-        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-            CameraSelector.LENS_FACING_FRONT
-        } else {
-            CameraSelector.LENS_FACING_BACK
-        }
-        // TAMBAHAN: Reset zoom ke 1.0 setiap flip kamera
-        currentZoomRatio = 1.0f 
+        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
+            CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+        
+        // Reset state saat kamera dibalik
+        currentZoomRatio = 1.0f        
+        isUsingPhysicalUw = false      
+        
         startCamera(currentFps)
     }
 
@@ -80,32 +111,124 @@ class CameraManager(private val activity: MainActivity) {
         imageCapture?.flashMode = flashMode
     }
 
-    // ── TAMBAHAN UNTUK ULTRAWIDE ──
-    fun setZoomRatio(ratio: Float) {
-        camera?.cameraInfo?.zoomState?.value?.let { zoomState ->
-            val minZoom = zoomState.minZoomRatio
-            val maxZoom = zoomState.maxZoomRatio
-            Log.d("CameraManager", "Batas Zoom HP ini -> Min: $minZoom, Max: $maxZoom")
+    // ── ULTRAWIDE: Zoom & Hardware Detection (HYBRID) ───────────────────────
 
-            // Paksa nilai zoom ke batas terkecil yang didukung HP
-            // Jika user minta 0.5 (ultrawide), pakai minZoom bawaan HP (bisa 0.5 atau 0.6)
-            // Jika user minta 1.0 (wide biasa), kembalikan ke 1.0
-            val targetZoom = if (ratio < 1.0f) minZoom else 1.0f
+    fun getUltrawideInfo(): Map<String, Any> {
+        val cameraManager = activity.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        val targetFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
+            CameraCharacteristics.LENS_FACING_BACK
+        else
+            CameraCharacteristics.LENS_FACING_FRONT
 
-            currentZoomRatio = targetZoom
-            camera?.cameraControl?.let { control ->
-                CameraHelper.setZoomRatio(control, targetZoom)
+        physicalUwId = null
+
+        // 1. CEK FISIK (PRIORITAS UTAMA)
+        // Memeriksa ID fisik yang memiliki focal length < 2.5 mm
+        try {
+            for (id in cameraManager.cameraIdList) {
+                val chars = cameraManager.getCameraCharacteristics(id)
+                if (chars.get(CameraCharacteristics.LENS_FACING) != targetFacing) continue
+
+                val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                if (focalLengths != null && focalLengths.isNotEmpty()) {
+                    val minFocal = focalLengths.minOrNull() ?: Float.MAX_VALUE
+                    if (minFocal < 2.5f) { // Ambang batas ultrawide
+                        physicalUwId = id
+                        Log.d("CameraManager", "✅ Cek Fisik: Ketemu Ultrawide ID=$id (Focal: $minFocal mm)")
+                        // Jika fisik ketemu, beri sinyal 0.5x ke Flutter
+                        return mapOf("supported" to true, "minZoom" to 0.5)
+                    }
+                }
             }
-            
-            Log.d("CameraManager", "Zoom sukses diatur ke: $targetZoom")
-        } ?: run {
-            Log.e("CameraManager", "Gagal set zoom: State kamera belum siap!")
+        } catch (e: Exception) {
+            Log.e("CameraManager", "Error saat cek fisik ultrawide", e)
         }
+
+        // 2. CEK LOGIS (CADANGAN)
+        // Mengecek apakah kamera utama mendukung CONTROL_ZOOM_RATIO_RANGE di bawah 1.0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val minZoom = getMinZoomRatio()
+            val supported = minZoom < 1.0f
+            if (supported) {
+                Log.d("CameraManager", "✅ Cek Logis: Mendukung Ultrawide via Zoom Ratio (minZoom=$minZoom)")
+                return mapOf("supported" to true, "minZoom" to minZoom.toDouble())
+            }
+        }
+
+        Log.d("CameraManager", "❌ Ultrawide tidak didukung di device/posisi ini.")
+        return mapOf("supported" to false, "minZoom" to 1.0)
     }
-        
+
+    fun setZoomRatio(requestedRatio: Float) {
+        if (requestedRatio < 1.0f) {
+            // User menekan tombol Ultrawide
+            if (physicalUwId != null) {
+                // Gunakan Lensa Fisik
+                isUsingPhysicalUw = true
+                currentZoomRatio = 1.0f // Lensa fisik sudah lebar, tidak butuh zoom-out digital
+                Log.d("CameraManager", "setZoomRatio: Pindah ke Lensa Fisik ID=$physicalUwId")
+            } else {
+                // Gunakan Logical Zoom
+                isUsingPhysicalUw = false
+                currentZoomRatio = getMinZoomRatio()
+                Log.d("CameraManager", "setZoomRatio: Pindah ke Logical Zoom (minZoom=$currentZoomRatio)")
+            }
+        } else {
+            // User menekan tombol Kamera Utama (1x)
+            isUsingPhysicalUw = false
+            currentZoomRatio = 1.0f
+            Log.d("CameraManager", "setZoomRatio: Kembali ke lensa utama")
+        }
+
+        // Restart session dengan konfigurasi baru
+        startCamera(currentFps)
+    }
+
+    // Logika bawaan lama untuk membaca rasio zoom terendah dari HAL
+    private fun getMinZoomRatio(): Float {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 1.0f
+
+        val cameraManager = activity.getSystemService(Context.CAMERA_SERVICE)
+                as android.hardware.camera2.CameraManager
+
+        val targetFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
+            CameraCharacteristics.LENS_FACING_BACK
+        else
+            CameraCharacteristics.LENS_FACING_FRONT
+
+        for (id in cameraManager.cameraIdList) {
+            try {
+                val chars = cameraManager.getCameraCharacteristics(id)
+                if (chars.get(CameraCharacteristics.LENS_FACING) != targetFacing) continue
+
+                val capabilities = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: continue
+
+                val isLogicalMultiCamera = capabilities.contains(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA
+                )
+                val isBackwardCompatible = capabilities.contains(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE
+                )
+                if (!isBackwardCompatible && !isLogicalMultiCamera) continue
+
+                val range = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                val minZoom = range?.lower ?: 1.0f
+                if (minZoom < 1.0f) {
+                    return minZoom
+                }
+            } catch (e: Exception) {
+                Log.w("CameraManager", "Error reading characteristics for camera $id", e)
+            }
+        }
+        return 1.0f
+    }
+
+    // ── Start / restart camera session ────────────────────────────────────────
 
     fun startCamera(targetFps: Int = 30) {
         currentFps = targetFps
+
+        debugPrintAllCameraInfo()
 
         CameraHelper.getProvider(
             activity,
@@ -113,34 +236,59 @@ class CameraManager(private val activity: MainActivity) {
             object : CameraHelper.CameraProviderCallback {
                 override fun onAvailable(cameraProvider: ProcessCameraProvider) {
 
+                    // ── Preview ──────────────────────────────────────────────
                     val previewBuilder = Preview.Builder()
-                    Camera2Interop.Extender(previewBuilder)
-                        .setCaptureRequestOption(
-                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                            Range(targetFps, targetFps)
+                    val previewInterop = Camera2Interop.Extender(previewBuilder)
+                    previewInterop.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                        Range(targetFps, targetFps)
+                    )
+                    
+                    if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        previewInterop.setCaptureRequestOption(
+                            CaptureRequest.CONTROL_ZOOM_RATIO,
+                            currentZoomRatio
                         )
+                    }
+
                     preview = previewBuilder.build().also { prev ->
                         previewView?.let { prev.setSurfaceProvider(it.surfaceProvider) }
                     }
 
-                    imageCapture = ImageCapture.Builder()
+                    // ── Still capture ────────────────────────────────────────
+                    val imageCaptureBuilder = ImageCapture.Builder()
                         .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                         .setFlashMode(flashMode)
-                        .build()
+                        
+                    if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        Camera2Interop.Extender(imageCaptureBuilder)
+                            .setCaptureRequestOption(
+                                CaptureRequest.CONTROL_ZOOM_RATIO,
+                                currentZoomRatio
+                            )
+                    }
+                    imageCapture = imageCaptureBuilder.build()
 
+                    // ── Frame analysis ───────────────────────────────────────
                     val analysisBuilder = ImageAnalysis.Builder()
                         .setTargetResolution(Size(720, 1280))
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-
-                    Camera2Interop.Extender(analysisBuilder)
-                        .setCaptureRequestOption(
-                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                            Range(targetFps, targetFps)
+                        
+                    val analysisInterop = Camera2Interop.Extender(analysisBuilder)
+                    analysisInterop.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                        Range(targetFps, targetFps)
+                    )
+                    
+                    if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        analysisInterop.setCaptureRequestOption(
+                            CaptureRequest.CONTROL_ZOOM_RATIO,
+                            currentZoomRatio
                         )
+                    }
 
                     val analyzer = analysisBuilder.build()
-
                     analyzer.setAnalyzer(cameraExecutor, ImageAnalysis.Analyzer { imageProxy ->
                         if (!isCapturing) {
                             preBuffer.addFrame(imageProxy)
@@ -156,40 +304,51 @@ class CameraManager(private val activity: MainActivity) {
                             }
                         }
                     })
-
                     imageAnalyzer = analyzer
 
                     try {
                         cameraProvider.unbindAll()
-                        // TAMBAHAN: Bind camera dan terapkan zoom
+
+                        // Pemilihan Selector Kamera (Physical / Logical)
+                        val selectorBuilder = CameraSelector.Builder().requireLensFacing(lensFacing)
+                        
+                        if (isUsingPhysicalUw && physicalUwId != null) {
+                            selectorBuilder.addCameraFilter(CameraFilter { cameraInfos ->
+                                val filtered = cameraInfos.filter { info ->
+                                    Camera2CameraInfo.from(info).cameraId == physicalUwId
+                                }
+                                if (filtered.isNotEmpty()) filtered else cameraInfos
+                            })
+                        }
+                        
+                        val cameraSelector = selectorBuilder.build()
+
                         camera = cameraProvider.bindToLifecycle(
                             activity,
-                            CameraSelector.Builder().requireLensFacing(lensFacing).build(),
+                            cameraSelector,
                             preview,
                             imageCapture,
                             imageAnalyzer
                         )
-                        
-                        camera?.cameraControl?.let { control ->
-                            CameraHelper.setZoomRatio(control, currentZoomRatio)
-                        }
-
-                        Log.d("CameraManager", "✅ Kamera $targetFps FPS + Preview siap! Lens: $lensFacing")
+                        Log.d("CameraManager", "✅ Camera started: fps=$targetFps, " +
+                                "lens=$lensFacing, isUsingPhysicalUw=$isUsingPhysicalUw, zoomRatio=$currentZoomRatio")
                     } catch (e: Exception) {
-                        Log.e("CameraManager", "Gagal bindToLifecycle", e)
+                        Log.e("CameraManager", "bindToLifecycle failed", e)
                     }
                 }
 
                 override fun onError(e: Exception) {
-                    Log.e("CameraManager", "Gagal dapat CameraProvider", e)
+                    Log.e("CameraManager", "Failed to get CameraProvider", e)
                 }
             }
         )
     }
 
+    // ── Motion photo capture ─────────────────────────────────────────────────
+
     fun takeMotionPhoto(isLiveEnabled: Boolean) {
         if (isCapturing) {
-            Log.w("CameraManager", "Masih capturing...")
+            Log.w("CameraManager", "Still capturing, ignoring request")
             return
         }
 
@@ -208,9 +367,12 @@ class CameraManager(private val activity: MainActivity) {
         isPhotoSaved = false
         postCaptureStartMs = System.currentTimeMillis()
 
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+            .format(System.currentTimeMillis())
         val appFolder = File(
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+            android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_PICTURES
+            ),
             "Vetecam"
         ).also { if (!it.exists()) it.mkdirs() }
 
@@ -225,19 +387,18 @@ class CameraManager(private val activity: MainActivity) {
             ContextCompat.getMainExecutor(activity),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    Log.d("CameraManager", "Foto OK. isLiveEnabled: $isLiveEnabled")
+                    Log.d("CameraManager", "Photo saved. isLiveEnabled=$isLiveEnabled")
                     isPhotoSaved = true
-
                     if (isLiveEnabled) {
                         checkAndEncode(photoFile, videoFile)
                     } else {
                         android.media.MediaScannerConnection.scanFile(
                             activity, arrayOf(photoFile.absolutePath), arrayOf("image/jpeg")
-                        ) { path, _ -> Log.d("CameraManager", "Scanned Image Only: $path") }
+                        ) { path, _ -> Log.d("CameraManager", "Scanned: $path") }
                     }
                 }
                 override fun onError(e: ImageCaptureException) {
-                    Log.e("CameraManager", "Foto gagal", e)
+                    Log.e("CameraManager", "Photo capture failed", e)
                     isCapturing = false
                 }
             }
@@ -257,8 +418,8 @@ class CameraManager(private val activity: MainActivity) {
 
                 if (allFrames.size > 1) {
                     val durMs = allFrames.last().timestampMs - allFrames.first().timestampMs
-                    Log.d("CameraManager", "Mulai Encode: Total ${allFrames.size} frame, " +
-                            "durasi=${durMs}ms, targetFps=$capturedFps")
+                    Log.d("CameraManager", "Encoding: ${allFrames.size} frames, " +
+                            "duration=${durMs}ms, fps=$capturedFps")
                 }
 
                 try {
@@ -270,9 +431,6 @@ class CameraManager(private val activity: MainActivity) {
                         1_500_000L
                     }
 
-                    Log.d("CameraManager", "presentationTimestampUs=$presentationTimestampUs µs " +
-                            "(${presentationTimestampUs / 1000} ms ke dalam video)")
-
                     VideoEncoder().encodeToMp4(allFrames, videoFile, capturedFps)
                     MotionPhotoMuxer.mux(photoFile, videoFile, presentationTimestampUs)
 
@@ -281,13 +439,11 @@ class CameraManager(private val activity: MainActivity) {
                         arrayOf(photoFile.absolutePath),
                         null
                     ) { path, uri ->
-                        Log.d("CameraManager", "✅ MediaStore scan selesai: $path | URI: $uri")
+                        Log.d("CameraManager", "✅ MediaStore scan done: $path | $uri")
                     }
-
-                    Log.d("CameraManager", "✅ Native Motion Photo selesai & Siap dibaca Galeri!")
-
+                    Log.d("CameraManager", "✅ Motion Photo complete")
                 } catch (e: Exception) {
-                    Log.e("CameraManager", "Error encode/muxing", e)
+                    Log.e("CameraManager", "Encode/mux error", e)
                 }
             }.start()
         }

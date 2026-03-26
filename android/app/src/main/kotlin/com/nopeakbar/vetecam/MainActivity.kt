@@ -9,7 +9,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
-    private val CHANNEL = "com.akbar.motionphoto/camera" 
+    private val CHANNEL = "com.akbar.motionphoto/camera"
     private lateinit var cameraManager: CameraManager
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
@@ -27,31 +27,52 @@ class MainActivity : FlutterActivity() {
             CHANNEL
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+
                 "startCamera" -> {
                     val fps = call.argument<Int>("fps") ?: 30
                     cameraManager.startCamera(fps)
-                    result.success("Kamera dimulai dengan $fps FPS")
+                    result.success("Camera started at $fps FPS")
                 }
+
                 "takeMotionPhoto" -> {
                     val isLive = call.argument<Boolean>("isLive") ?: true
                     cameraManager.takeMotionPhoto(isLive)
-                    result.success("Trigger Motion Photo berjalan!")
+                    result.success("Motion photo triggered")
                 }
+
                 "switchCamera" -> {
                     cameraManager.switchCamera()
-                    result.success("Kamera di-flip")
+                    result.success("Camera flipped")
                 }
+
                 "setFlashMode" -> {
                     val mode = call.argument<Int>("mode") ?: 0
                     cameraManager.setFlashMode(mode)
-                    result.success("Flash diubah ke $mode")
+                    result.success("Flash mode set to $mode")
                 }
-                // ── TAMBAHAN UNTUK ULTRAWIDE ──
+
+                // ── Ultrawide zoom ──────────────────────────────────────────
+                // FIX: This handler now calls the corrected setZoomRatio() which:
+                //   1. Reads min zoom from CameraCharacteristics (not LiveData).
+                //   2. Updates currentZoomRatio.
+                //   3. Calls startCamera() to restart the session with
+                //      CONTROL_ZOOM_RATIO baked into every use-case builder
+                //      via Camera2Interop.
                 "setZoomRatio" -> {
                     val ratio = call.argument<Double>("ratio")?.toFloat() ?: 1.0f
                     cameraManager.setZoomRatio(ratio)
-                    result.success("Zoom diatur ke $ratio")
+                    result.success("Zoom ratio set to $ratio")
                 }
+
+                // ── NEW: Query ultrawide support before showing the button ──
+                // Returns { "supported": Boolean, "minZoom": Double }
+                // Flutter uses this to show/hide the 0.5x button and to know
+                // the actual label to display (e.g. "0.6x" instead of "0.5x").
+                "getUltrawideInfo" -> {
+                    val info = cameraManager.getUltrawideInfo()
+                    result.success(info)
+                }
+
                 else -> result.notImplemented()
             }
         }
