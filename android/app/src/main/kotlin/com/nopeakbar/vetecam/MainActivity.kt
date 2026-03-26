@@ -30,8 +30,9 @@ class MainActivity : FlutterActivity() {
 
                 "startCamera" -> {
                     val fps = call.argument<Int>("fps") ?: 30
-                    cameraManager.startCamera(fps)
-                    result.success("Camera started at $fps FPS")
+                    val resolution = call.argument<Int>("resolution") ?: 1080 
+                    cameraManager.startCamera(fps, resolution) 
+                    result.success("Camera started at $fps FPS & ${resolution}p")
                 }
 
                 "takeMotionPhoto" -> {

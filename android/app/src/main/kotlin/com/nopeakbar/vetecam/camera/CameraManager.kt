@@ -225,8 +225,13 @@ class CameraManager(private val activity: MainActivity) {
 
     // ── Start / restart camera session ────────────────────────────────────────
 
-    fun startCamera(targetFps: Int = 30) {
+    fun startCamera(targetFps: Int = 30, targetRes: Int = 1080) { 
         currentFps = targetFps
+        val targetSize = when (targetRes) {
+            720 -> Size(720, 1280)
+            2160 -> Size(2160, 3840)
+            else -> Size(1080, 1920) // Default 1080p
+        }
 
         debugPrintAllCameraInfo()
 
@@ -271,7 +276,7 @@ class CameraManager(private val activity: MainActivity) {
 
                     // ── Frame analysis ───────────────────────────────────────
                     val analysisBuilder = ImageAnalysis.Builder()
-                        .setTargetResolution(Size(720, 1280))
+                        .setTargetResolution(targetSize)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                         

@@ -79,11 +79,19 @@ class VideoEncoder {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
             )
 
-            // ── FIX #3: Bitrate adaptif sesuai FPS ───────────────────────────
-            // Di 60fps kita butuh lebih banyak bit per detik agar kualitas tidak
-            // turun (lebih banyak frame per detik = lebih banyak data).
-            // Di 30fps, 8Mbps sudah lebih dari cukup untuk 720p.
-            val bitrate = if (actualFps >= 50) 16_000_000 else 8_000_000
+            // ── FIX #3: Bitrate adaptif sesuai FPS & Resolusi ────────────────
+            val pixelCount = alignedWidth * alignedHeight
+            
+            // Tentukan base bitrate berdasarkan resolusi (4K butuh ~40Mbps, 1080p butuh ~16Mbps, 720p butuh ~8Mbps)
+            val baseBitrate = when {
+                pixelCount >= 8_000_000 -> 40_000_000
+                pixelCount >= 2_000_000 -> 16_000_000
+                else -> 8_000_000
+            }
+
+            // Naikkan 50% jika merekam di 60fps agar tidak terjadi artefak (pixelated)
+            val bitrate = if (actualFps >= 50) (baseBitrate * 1.5).toInt() else baseBitrate
+            
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
 
             // ── FIX #4: Gunakan actualFps (bukan hardcode 60) ────────────────

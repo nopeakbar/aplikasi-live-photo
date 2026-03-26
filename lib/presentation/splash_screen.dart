@@ -53,12 +53,7 @@ class _SplashScreenState extends State<SplashScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Ikon kamera sebagai logo sementara
-              Image.asset(
-                'assets/icon/logo.png',
-                width: 96, // Bebas kamu sesuaikan ukurannya
-                height: 96,
-              ),
+              Image.asset('assets/icon/logo.png', width: 96, height: 96),
               const SizedBox(height: 16),
               const Text(
                 'Vetecam',

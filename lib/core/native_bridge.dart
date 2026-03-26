@@ -23,9 +23,15 @@ class NativeBridge {
     }
   }
 
-  static Future<void> startCameraPreview({int fps = 30}) async {
+  static Future<void> startCameraPreview({
+    int fps = 30,
+    int resolution = 1080,
+  }) async {
     try {
-      await _channel.invokeMethod('startCamera', {'fps': fps});
+      await _channel.invokeMethod('startCamera', {
+        'fps': fps,
+        'resolution': resolution, // Tambahkan baris ini
+      });
     } catch (e) {
       print("Failed to start camera: $e");
     }

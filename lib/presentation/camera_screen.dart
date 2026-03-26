@@ -20,15 +20,12 @@ class _CameraScreenState extends State<CameraScreen>
   String _statusText = '';
   File? _lastPhoto;
 
-  // ── Camera settings ──────────────────────────────────────────────────────
   int _targetFps = 30;
+  int _targetResolution = 1080; // Default ke 1080p
   bool _isLiveEnabled = true;
   int _flashMode = 2; // 0: Auto, 1: On, 2: Off
 
   // ── Ultrawide / zoom state ───────────────────────────────────────────────
-  // _ultrawideSupported: set once at init from native hardware query.
-  // _minZoomRatio: the actual min zoom of this device (0.5, 0.6, etc.).
-  // _isUltrawide: whether the current session is in ultrawide mode.
   bool _ultrawideSupported = false;
   double _minZoomRatio = 0.5;
   bool _isUltrawide = false;
@@ -99,11 +96,13 @@ class _CameraScreenState extends State<CameraScreen>
       return;
     }
 
-    await NativeBridge.startCameraPreview(fps: _targetFps);
+    // FIX: Tambahkan parameter resolution di sini
+    await NativeBridge.startCameraPreview(
+      fps: _targetFps,
+      resolution: _targetResolution,
+    );
     await NativeBridge.setFlashMode(_flashMode);
 
-    // Query ultrawide support from native hardware AFTER camera starts.
-    // This ensures CameraManager has the correct lensFacing set.
     final info = await NativeBridge.getUltrawideInfo();
 
     if (mounted) {
@@ -122,10 +121,12 @@ class _CameraScreenState extends State<CameraScreen>
       _cameraReady = false;
       _statusText = 'Restarting camera...';
     });
-    await NativeBridge.startCameraPreview(fps: _targetFps);
+    await NativeBridge.startCameraPreview(
+      fps: _targetFps,
+      resolution: _targetResolution,
+    );
     await NativeBridge.setFlashMode(_flashMode);
 
-    // Re-query ultrawide info in case facing changed
     final info = await NativeBridge.getUltrawideInfo();
 
     if (mounted) {
@@ -142,6 +143,21 @@ class _CameraScreenState extends State<CameraScreen>
     HapticFeedback.selectionClick();
     setState(() {
       _targetFps = _targetFps == 30 ? 60 : 30;
+      _cameraReady = false;
+    });
+    _restartCamera();
+  }
+
+  void _toggleResolution() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (_targetResolution == 720) {
+        _targetResolution = 1080;
+      } else if (_targetResolution == 1080) {
+        _targetResolution = 2160;
+      } else {
+        _targetResolution = 720;
+      }
       _cameraReady = false;
     });
     _restartCamera();
@@ -171,24 +187,6 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  // ── FIXED: zoom toggle ────────────────────────────────────────────────────
-  // FIX: The previous implementation changed _currentZoom state and called
-  // NativeBridge.setZoomRatio() without any feedback loop. The user saw "0.5x"
-  // in the UI but the camera never switched because:
-  //   1. The native reflection call failed silently.
-  //   2. There was no loading state — the user couldn't tell if the switch
-  //      was in progress.
-  //
-  // NEW behavior:
-  //   1. Toggle _isUltrawide flag.
-  //   2. Show loading state (_cameraReady = false) while the session restarts.
-  //   3. Call setZoomRatio() with the correct signal value:
-  //        - 0.5 means "switch to ultrawide" (native maps this to actual minZoom)
-  //        - 1.0 means "return to main lens"
-  //   4. Wait for the session restart, then re-enable the preview.
-  //
-  // The brief "camera restarting" flash is intentional and expected — switching
-  // to a different physical sensor requires a full session teardown + rebuild.
   void _toggleZoom() async {
     if (!_ultrawideSupported) return;
     HapticFeedback.selectionClick();
@@ -200,13 +198,8 @@ class _CameraScreenState extends State<CameraScreen>
       _cameraReady = false;
     });
 
-    // Pass 0.5 as the "use ultrawide" signal, or 1.0 as "use main lens".
-    // Native side reads CONTROL_ZOOM_RATIO_RANGE.lower from CameraCharacteristics
-    // and uses the actual device min zoom — ignoring the exact value we pass.
     await NativeBridge.setZoomRatio(newIsUltrawide ? 0.5 : 1.0);
 
-    // Give the camera session a moment to restart before re-enabling the preview.
-    // startCamera() is asynchronous on the native side; we wait for it to settle.
     await Future.delayed(const Duration(milliseconds: 800));
     if (mounted) {
       setState(() => _cameraReady = true);
@@ -222,7 +215,6 @@ class _CameraScreenState extends State<CameraScreen>
     await NativeBridge.switchCamera();
     await Future.delayed(const Duration(milliseconds: 600));
 
-    // Re-query ultrawide support for the new facing direction
     final info = await NativeBridge.getUltrawideInfo();
     if (mounted) {
       setState(() {
@@ -337,11 +329,6 @@ class _CameraScreenState extends State<CameraScreen>
             ),
 
           // 7. Zoom toggle button (only shown when ultrawide is supported)
-          //
-          // FIX: The button is now:
-          //   - Hidden entirely when ultrawide is not supported on this device.
-          //   - Shows the real zoom label from hardware (e.g. "0.6x" if minZoom=0.6).
-          //   - Disabled during camera restart (opacity feedback).
           if (_cameraReady && _ultrawideSupported)
             Positioned(
               bottom: 140,
@@ -367,7 +354,6 @@ class _CameraScreenState extends State<CameraScreen>
                       ),
                     ),
                     child: Text(
-                      // Show the real device min zoom label or "1x"
                       _isUltrawide
                           ? '${_minZoomRatio.toStringAsFixed(1)}x'
                           : '1x',
@@ -540,32 +526,76 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleGrid,
               ),
 
-              // FPS toggle
-              GestureDetector(
-                onTap: _toggleFps,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _targetFps == 60 ? Colors.yellow : Colors.white54,
+              // FIX: Menambahkan UI tombol toggle resolusi di sini
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  GestureDetector(
+                    onTap: _toggleResolution,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: _targetResolution == 2160
+                              ? Colors.yellow
+                              : Colors.white54,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                        color: _targetResolution == 2160
+                            ? Colors.yellow.withOpacity(0.15)
+                            : Colors.white12,
+                      ),
+                      child: Text(
+                        _targetResolution == 2160
+                            ? '4K'
+                            : '${_targetResolution}p',
+                        style: TextStyle(
+                          color: _targetResolution == 2160
+                              ? Colors.yellow
+                              : Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                    borderRadius: BorderRadius.circular(8),
-                    color: _targetFps == 60
-                        ? Colors.yellow.withOpacity(0.15)
-                        : Colors.white12,
                   ),
-                  child: Text(
-                    '${_targetFps}fps',
-                    style: TextStyle(
-                      color: _targetFps == 60 ? Colors.yellow : Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
+
+                  // FPS toggle
+                  GestureDetector(
+                    onTap: _toggleFps,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: _targetFps == 60
+                              ? Colors.yellow
+                              : Colors.white54,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                        color: _targetFps == 60
+                            ? Colors.yellow.withOpacity(0.15)
+                            : Colors.white12,
+                      ),
+                      child: Text(
+                        '${_targetFps}fps',
+                        style: TextStyle(
+                          color: _targetFps == 60
+                              ? Colors.yellow
+                              : Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                ],
               ),
             ],
           ),
