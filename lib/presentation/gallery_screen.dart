@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import 'package:share_plus/share_plus.dart';
 import '../core/video_processor.dart';
 
 // ═══════════════════════════════════════════════════════════
@@ -15,7 +16,7 @@ class LivePhotoItem {
 }
 
 // TAMBAHAN: Enum untuk jenis efek Live Photo
-enum LiveEffect { live, loop, bounce, longExposure }
+enum LiveEffect { live, loop, bounce, longExposure, veteGrading }
 
 // ═══════════════════════════════════════════════════════════
 // GALLERY SCREEN
@@ -55,7 +56,6 @@ class _GalleryScreenState extends State<GalleryScreen> {
 
     for (final jpg in jpgFiles) {
       final fileName = jpg.path.split('/').last;
-
       String mp4FileName;
       if (fileName.contains('_MP.jpg')) {
         // Format baru (dengan underscore)
@@ -164,7 +164,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     Navigator.push(
       ctx,
       PageRouteBuilder(
-        pageBuilder: (_, _, _) =>
+        pageBuilder: (context, animation, secondaryAnimation) =>
             LivePhotoViewer(items: _items, initialIndex: index),
         transitionsBuilder: (_, anim, _, child) =>
             FadeTransition(opacity: anim, child: child),
@@ -285,6 +285,7 @@ class LivePhotoViewer extends StatefulWidget {
     required this.items,
     required this.initialIndex,
   });
+
   @override
   State<LivePhotoViewer> createState() => _LivePhotoViewerState();
 }
@@ -305,6 +306,15 @@ class _LivePhotoViewerState extends State<LivePhotoViewer>
   void dispose() {
     _pageCtrl.dispose();
     super.dispose();
+  }
+
+  void _shareToInstagram() async {
+    final String filePath = widget.items[_currentIndex].photo.path;
+    final params = ShareParams(
+      files: [XFile(filePath)],
+      text: 'Cek Live Photo gue pakai Vetecam!',
+    );
+    await SharePlus.instance.share(params);
   }
 
   @override
@@ -331,6 +341,10 @@ class _LivePhotoViewerState extends State<LivePhotoViewer>
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.ios_share_rounded, size: 22),
+            onPressed: _shareToInstagram,
+          ),
           // TAMBAHAN: Tombol Trim/Edit (Kosmetik / Placeholder)
           TextButton(
             onPressed: () {
@@ -366,6 +380,7 @@ class _LivePhotoViewerState extends State<LivePhotoViewer>
 class _LivePhotoPage extends StatefulWidget {
   final LivePhotoItem item;
   const _LivePhotoPage({required this.item});
+
   @override
   State<_LivePhotoPage> createState() => _LivePhotoPageState();
 }
@@ -376,11 +391,9 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   bool _isPlaying = false;
   bool _isLoading = false;
   bool _didFinish = false;
-
   // State untuk Efek & Audio
   LiveEffect _currentEffect = LiveEffect.live;
   bool _isMuted = false;
-
   // State untuk FFmpeg
   bool _isProcessingEffect = false;
   File? _processedVideoFile;
@@ -453,6 +466,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   Future<void> _startLive() async {
     if (_isLoading || _isPlaying || _isProcessingEffect) return;
     HapticFeedback.heavyImpact();
+
     setState(() {
       _isLoading = true;
       _didFinish = false;
@@ -463,7 +477,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
     _videoCtrl?.dispose();
 
-    // Gunakan file hasil edit (Bounce) jika ada, kalau tidak gunakan video asli
+    // Gunakan file hasil edit (Bounce atau Graded) jika ada, kalau tidak gunakan video asli
     final targetVideo = _processedVideoFile ?? widget.item.video;
 
     _videoCtrl = VideoPlayerController.file(targetVideo);
@@ -474,6 +488,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
     _videoCtrl!.setLooping(
       _currentEffect == LiveEffect.loop || _currentEffect == LiveEffect.bounce,
     );
+
     _videoCtrl!.addListener(_onVideoTick);
 
     await _videoCtrl!.play();
@@ -491,7 +506,6 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
   void _onVideoTick() {
     if (_videoCtrl == null) return;
     final val = _videoCtrl!.value;
-
     // Cegah didFinish jika efeknya Loop atau Bounce
     if (val.position >= val.duration &&
         !_didFinish &&
@@ -533,6 +547,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
   void _showEffectsMenu(BuildContext context) {
     HapticFeedback.mediumImpact();
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
@@ -583,6 +598,12 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
                         'Eksposur\nPanjang',
                         Icons.camera_enhance_rounded,
                       ),
+                      const SizedBox(width: 16),
+                      _buildEffectOption(
+                        LiveEffect.veteGrading,
+                        'Vete Grading',
+                        Icons.color_lens_rounded,
+                      ),
                     ],
                   ),
                 ),
@@ -596,6 +617,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 
   Widget _buildEffectOption(LiveEffect effect, String title, IconData icon) {
     final isSelected = _currentEffect == effect;
+
     return GestureDetector(
       onTap: () {
         HapticFeedback.selectionClick();
@@ -682,6 +704,25 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
         setState(() => _isProcessingEffect = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Gagal menerapkan efek Long Exposure.')),
+        );
+      }
+    } else if (effect == LiveEffect.veteGrading) {
+      // Panggil FFmpeg untuk nerapin color grading
+      final gradedFile = await VideoProcessor.applyLUT(
+        widget.item.video,
+        'assets/luts/biru-vete1.png', // Pastikan nama ini sesuai dengan di pubspec lu
+      );
+
+      if (gradedFile != null && mounted) {
+        setState(() {
+          _processedVideoFile = gradedFile;
+          _isProcessingEffect = false;
+        });
+        _startLive();
+      } else if (mounted) {
+        setState(() => _isProcessingEffect = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gagal menerapkan Vete Grading.')),
         );
       }
     }
@@ -921,6 +962,7 @@ class _LivePhotoPageState extends State<_LivePhotoPage>
 class _VideoProgressPill extends StatefulWidget {
   final VideoPlayerController controller;
   const _VideoProgressPill({required this.controller});
+
   @override
   State<_VideoProgressPill> createState() => _VideoProgressPillState();
 }
@@ -948,6 +990,7 @@ class _VideoProgressPillState extends State<_VideoProgressPill> {
     final total = val.duration.inMilliseconds;
     final pos = val.position.inMilliseconds;
     final pct = total > 0 ? (pos / total).clamp(0.0, 1.0) : 0.0;
+
     return Container(
       width: 80,
       height: 3,
@@ -976,6 +1019,7 @@ class _VideoProgressPillState extends State<_VideoProgressPill> {
 class _LiveBadge extends StatelessWidget {
   final bool small;
   final double staticOpacity;
+
   const _LiveBadge({required this.small, this.staticOpacity = 1.0});
 
   @override

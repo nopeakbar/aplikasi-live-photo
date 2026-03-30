@@ -23,6 +23,14 @@ class NativeBridge {
     }
   }
 
+  static Future<void> setStabilizationMode(bool enabled) async {
+    try {
+      await _channel.invokeMethod('setStabilizationMode', {'enabled': enabled});
+    } catch (e) {
+      print("Failed to set stabilization: $e");
+    }
+  }
+
   static Future<void> startCameraPreview({
     int fps = 30,
     int resolution = 1080,

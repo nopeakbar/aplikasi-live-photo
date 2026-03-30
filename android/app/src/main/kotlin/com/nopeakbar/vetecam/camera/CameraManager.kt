@@ -30,6 +30,7 @@ class CameraManager(private val activity: MainActivity) {
 
     // ── Zoom state ──────────────────────────────────────────────────────────
     @Volatile private var currentZoomRatio: Float = 1.0f
+    @Volatile private var isStabilizationEnabled: Boolean = true
 
     // ── Physical Ultrawide State (Hybrid Logic) ─────────────────────────────
     private var physicalUwId: String? = null
@@ -55,6 +56,7 @@ class CameraManager(private val activity: MainActivity) {
     private var flashMode = ImageCapture.FLASH_MODE_OFF
 
     @Volatile private var currentFps: Int = 30
+    @Volatile private var currentRes: Int = 1080
 
     // ── Preview attachment ───────────────────────────────────────────────────
 
@@ -103,12 +105,17 @@ class CameraManager(private val activity: MainActivity) {
         currentZoomRatio = 1.0f        
         isUsingPhysicalUw = false      
         
-        startCamera(currentFps)
+        startCamera(currentFps, currentRes)
     }
 
     fun setFlashMode(mode: Int) {
         flashMode = mode
         imageCapture?.flashMode = flashMode
+    }
+
+    fun setStabilizationMode(enabled: Boolean) {
+        isStabilizationEnabled = enabled
+        startCamera(currentFps, currentRes) // Restart kamera biar efeknya jalan
     }
 
     // ── ULTRAWIDE: Zoom & Hardware Detection (HYBRID) ───────────────────────
@@ -181,7 +188,7 @@ class CameraManager(private val activity: MainActivity) {
         }
 
         // Restart session dengan konfigurasi baru
-        startCamera(currentFps)
+        startCamera(currentFps, currentRes)
     }
 
     // Logika bawaan lama untuk membaca rasio zoom terendah dari HAL
@@ -227,6 +234,7 @@ class CameraManager(private val activity: MainActivity) {
 
     fun startCamera(targetFps: Int = 30, targetRes: Int = 1080) { 
         currentFps = targetFps
+        currentRes = targetRes
         val targetSize = when (targetRes) {
             720 -> Size(720, 1280)
             2160 -> Size(2160, 3840)
@@ -248,6 +256,12 @@ class CameraManager(private val activity: MainActivity) {
                         CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                         Range(targetFps, targetFps)
                     )
+
+                    previewInterop.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                        if (isStabilizationEnabled) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                        else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+                    )
                     
                     if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         previewInterop.setCaptureRequestOption(
@@ -264,6 +278,12 @@ class CameraManager(private val activity: MainActivity) {
                     val imageCaptureBuilder = ImageCapture.Builder()
                         .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                         .setFlashMode(flashMode)
+
+                    Camera2Interop.Extender(imageCaptureBuilder).setCaptureRequestOption(
+                        CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                        if (isStabilizationEnabled) CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON
+                        else CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF
+                    )
                         
                     if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         Camera2Interop.Extender(imageCaptureBuilder)
@@ -284,6 +304,12 @@ class CameraManager(private val activity: MainActivity) {
                     analysisInterop.setCaptureRequestOption(
                         CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                         Range(targetFps, targetFps)
+                    )
+
+                    analysisInterop.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                        if (isStabilizationEnabled) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                        else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
                     )
                     
                     if (!isUsingPhysicalUw && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

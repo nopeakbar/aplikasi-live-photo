@@ -52,6 +52,12 @@ class MainActivity : FlutterActivity() {
                     result.success("Flash mode set to $mode")
                 }
 
+                "setStabilizationMode" -> {
+                    val enabled = call.argument<Boolean>("enabled") ?: true
+                    cameraManager.setStabilizationMode(enabled)
+                    result.success("Stabilization set to $enabled")
+                }
+
                 // ── Ultrawide zoom ──────────────────────────────────────────
                 // FIX: This handler now calls the corrected setZoomRatio() which:
                 //   1. Reads min zoom from CameraCharacteristics (not LiveData).

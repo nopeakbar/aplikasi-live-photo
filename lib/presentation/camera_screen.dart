@@ -21,9 +21,28 @@ class _CameraScreenState extends State<CameraScreen>
   File? _lastPhoto;
 
   int _targetFps = 30;
-  int _targetResolution = 1080; // Default ke 1080p
+  int _targetResolution = 1080;
   bool _isLiveEnabled = true;
-  int _flashMode = 2; // 0: Auto, 1: On, 2: Off
+  int _flashMode = 2;
+  bool _isStabilizationEnabled = true;
+
+  void _toggleStabilization() async {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _isStabilizationEnabled = !_isStabilizationEnabled;
+      _cameraReady = false; // Bikin layar item bentar buat restart
+    });
+
+    await NativeBridge.setStabilizationMode(_isStabilizationEnabled);
+    await NativeBridge.setFlashMode(_flashMode);
+
+    // Tunggu restart kelar
+    await Future.delayed(const Duration(milliseconds: 900));
+
+    if (mounted) {
+      setState(() => _cameraReady = true);
+    }
+  }
 
   // ── Ultrawide / zoom state ───────────────────────────────────────────────
   bool _ultrawideSupported = false;
@@ -96,7 +115,6 @@ class _CameraScreenState extends State<CameraScreen>
       return;
     }
 
-    // FIX: Tambahkan parameter resolution di sini
     await NativeBridge.startCameraPreview(
       fps: _targetFps,
       resolution: _targetResolution,
@@ -121,6 +139,7 @@ class _CameraScreenState extends State<CameraScreen>
       _cameraReady = false;
       _statusText = 'Restarting camera...';
     });
+
     await NativeBridge.startCameraPreview(
       fps: _targetFps,
       resolution: _targetResolution,
@@ -192,7 +211,6 @@ class _CameraScreenState extends State<CameraScreen>
     HapticFeedback.selectionClick();
 
     final newIsUltrawide = !_isUltrawide;
-
     setState(() {
       _isUltrawide = newIsUltrawide;
       _cameraReady = false;
@@ -201,6 +219,7 @@ class _CameraScreenState extends State<CameraScreen>
     await NativeBridge.setZoomRatio(newIsUltrawide ? 0.5 : 1.0);
 
     await Future.delayed(const Duration(milliseconds: 800));
+
     if (mounted) {
       setState(() => _cameraReady = true);
     }
@@ -212,10 +231,12 @@ class _CameraScreenState extends State<CameraScreen>
       _cameraReady = false;
       _isUltrawide = false; // Reset zoom on camera flip
     });
+
     await NativeBridge.switchCamera();
     await Future.delayed(const Duration(milliseconds: 600));
 
     final info = await NativeBridge.getUltrawideInfo();
+
     if (mounted) {
       setState(() {
         _cameraReady = true;
@@ -227,7 +248,6 @@ class _CameraScreenState extends State<CameraScreen>
 
   Future<void> _jepret() async {
     if (_isCapturing || !_cameraReady || _currentCountdown > 0) return;
-
     if (_timerSetting > 0) {
       _mulaiHitungMundur();
       return;
@@ -461,6 +481,16 @@ class _CameraScreenState extends State<CameraScreen>
                 ),
                 onPressed: _toggleFlash,
               ),
+              IconButton(
+                icon: Icon(
+                  _isStabilizationEnabled
+                      ? Icons.video_stable
+                      : Icons.camera_enhance_outlined,
+                  color: _isStabilizationEnabled ? Colors.yellow : Colors.white,
+                  size: 22,
+                ),
+                onPressed: _toggleStabilization,
+              ),
 
               IconButton(
                 icon: Icon(
@@ -526,7 +556,6 @@ class _CameraScreenState extends State<CameraScreen>
                 onPressed: _toggleGrid,
               ),
 
-              // FIX: Menambahkan UI tombol toggle resolusi di sini
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
