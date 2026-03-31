@@ -45,6 +45,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax_version")
     implementation("androidx.camera:camera-view:$camerax_version")
     implementation("androidx.concurrent:concurrent-futures-ktx:1.1.0")
+    implementation ("com.google.guava:guava:31.1-android")
 
     implementation("com.google.guava:listenablefuture:1.0")
 }

@@ -14,6 +14,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.nopeakbar.vetecam.MainActivity
+import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -28,9 +29,14 @@ class CameraManager(private val activity: MainActivity) {
     private var previewView: PreviewView? = null
     private var camera: Camera? = null
 
+    // ── GPU Surface Processor untuk Live Filter ─────────────────────────────
+    private var lutProcessor: LutSurfaceProcessor? = null
+    @Volatile private var currentLutAsset: String? = null // null = Normal (tanpa filter)
+
     // ── Zoom state ──────────────────────────────────────────────────────────
     @Volatile private var currentZoomRatio: Float = 1.0f
     @Volatile private var isStabilizationEnabled: Boolean = true
+    @Volatile private var currentDynamicZoom: Float = 1.0f
 
     // ── Physical Ultrawide State (Hybrid Logic) ─────────────────────────────
     private var physicalUwId: String? = null
@@ -101,7 +107,6 @@ class CameraManager(private val activity: MainActivity) {
         lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
             CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
         
-        // Reset state saat kamera dibalik
         currentZoomRatio = 1.0f        
         isUsingPhysicalUw = false      
         
@@ -115,7 +120,20 @@ class CameraManager(private val activity: MainActivity) {
 
     fun setStabilizationMode(enabled: Boolean) {
         isStabilizationEnabled = enabled
-        startCamera(currentFps, currentRes) // Restart kamera biar efeknya jalan
+        startCamera(currentFps, currentRes) 
+    }
+
+    // ── LIVE FILTER / GRADING ───────────────────────────────────────────────
+    
+    fun setLiveFilter(lutAsset: String?) {
+        // Jika filter yang dipilih sama dengan yang sedang aktif, abaikan
+        if (currentLutAsset == lutAsset) return
+        
+        currentLutAsset = lutAsset
+        Log.d("CameraManager", "Live Filter diganti ke: ${lutAsset ?: "Normal"}")
+        
+        // Restart kamera agar UseCaseGroup di-rebuild dengan (atau tanpa) efek GPU
+        startCamera(currentFps, currentRes)
     }
 
     // ── ULTRAWIDE: Zoom & Hardware Detection (HYBRID) ───────────────────────
@@ -129,8 +147,6 @@ class CameraManager(private val activity: MainActivity) {
 
         physicalUwId = null
 
-        // 1. CEK FISIK (PRIORITAS UTAMA)
-        // Memeriksa ID fisik yang memiliki focal length < 2.5 mm
         try {
             for (id in cameraManager.cameraIdList) {
                 val chars = cameraManager.getCameraCharacteristics(id)
@@ -139,10 +155,9 @@ class CameraManager(private val activity: MainActivity) {
                 val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 if (focalLengths != null && focalLengths.isNotEmpty()) {
                     val minFocal = focalLengths.minOrNull() ?: Float.MAX_VALUE
-                    if (minFocal < 2.5f) { // Ambang batas ultrawide
+                    if (minFocal < 2.5f) { 
                         physicalUwId = id
                         Log.d("CameraManager", "✅ Cek Fisik: Ketemu Ultrawide ID=$id (Focal: $minFocal mm)")
-                        // Jika fisik ketemu, beri sinyal 0.5x ke Flutter
                         return mapOf("supported" to true, "minZoom" to 0.5)
                     }
                 }
@@ -151,8 +166,6 @@ class CameraManager(private val activity: MainActivity) {
             Log.e("CameraManager", "Error saat cek fisik ultrawide", e)
         }
 
-        // 2. CEK LOGIS (CADANGAN)
-        // Mengecek apakah kamera utama mendukung CONTROL_ZOOM_RATIO_RANGE di bawah 1.0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val minZoom = getMinZoomRatio()
             val supported = minZoom < 1.0f
@@ -168,30 +181,35 @@ class CameraManager(private val activity: MainActivity) {
 
     fun setZoomRatio(requestedRatio: Float) {
         if (requestedRatio < 1.0f) {
-            // User menekan tombol Ultrawide
             if (physicalUwId != null) {
-                // Gunakan Lensa Fisik
                 isUsingPhysicalUw = true
-                currentZoomRatio = 1.0f // Lensa fisik sudah lebar, tidak butuh zoom-out digital
+                currentZoomRatio = 1.0f 
                 Log.d("CameraManager", "setZoomRatio: Pindah ke Lensa Fisik ID=$physicalUwId")
             } else {
-                // Gunakan Logical Zoom
                 isUsingPhysicalUw = false
                 currentZoomRatio = getMinZoomRatio()
                 Log.d("CameraManager", "setZoomRatio: Pindah ke Logical Zoom (minZoom=$currentZoomRatio)")
             }
         } else {
-            // User menekan tombol Kamera Utama (1x)
             isUsingPhysicalUw = false
             currentZoomRatio = 1.0f
             Log.d("CameraManager", "setZoomRatio: Kembali ke lensa utama")
         }
-
-        // Restart session dengan konfigurasi baru
         startCamera(currentFps, currentRes)
     }
 
-    // Logika bawaan lama untuk membaca rasio zoom terendah dari HAL
+    fun updateActiveZoom(ratio: Float) {
+        // Jika menggunakan lensa fisik ultrawide, base ratio-nya adalah 1.0 untuk lensa tersebut
+        val targetRatio = if (isUsingPhysicalUw) {
+            maxOf(1.0f, ratio) 
+        } else {
+            maxOf(getMinZoomRatio(), ratio)
+        }
+        
+        currentDynamicZoom = targetRatio
+        camera?.cameraControl?.setZoomRatio(targetRatio)
+    }
+
     private fun getMinZoomRatio(): Float {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 1.0f
 
@@ -238,7 +256,7 @@ class CameraManager(private val activity: MainActivity) {
         val targetSize = when (targetRes) {
             720 -> Size(720, 1280)
             2160 -> Size(2160, 3840)
-            else -> Size(1080, 1920) // Default 1080p
+            else -> Size(1080, 1920) 
         }
 
         debugPrintAllCameraInfo()
@@ -337,12 +355,11 @@ class CameraManager(private val activity: MainActivity) {
                     })
                     imageAnalyzer = analyzer
 
+                    // ── PENYUSUNAN USE CASE GROUP & CAMERA EFFECT ────────────
                     try {
                         cameraProvider.unbindAll()
 
-                        // Pemilihan Selector Kamera (Physical / Logical)
                         val selectorBuilder = CameraSelector.Builder().requireLensFacing(lensFacing)
-                        
                         if (isUsingPhysicalUw && physicalUwId != null) {
                             selectorBuilder.addCameraFilter(CameraFilter { cameraInfos ->
                                 val filtered = cameraInfos.filter { info ->
@@ -351,18 +368,42 @@ class CameraManager(private val activity: MainActivity) {
                                 if (filtered.isNotEmpty()) filtered else cameraInfos
                             })
                         }
-                        
                         val cameraSelector = selectorBuilder.build()
 
+                        val useCaseGroupBuilder = UseCaseGroup.Builder()
+                            .addUseCase(preview!!)
+                            .addUseCase(imageCapture!!)
+                            .addUseCase(imageAnalyzer!!)
+
+                        // Jika filter LUT aktif, tambahkan efek GPU ke UseCaseGroup
+                        if (currentLutAsset != null) {
+                            if (lutProcessor == null) {
+                                lutProcessor = LutSurfaceProcessor(activity)
+                            }
+                            lutProcessor?.setLutAsset(currentLutAsset)
+
+                            // Terapkan efek HANYA ke PREVIEW saja (Hapus or CameraEffect.IMAGE_CAPTURE)
+                            val lutEffect = object : CameraEffect(
+                                CameraEffect.PREVIEW, // <--- UBAH DI SINI
+                                Executors.newSingleThreadExecutor(),
+                                lutProcessor!!,
+                                androidx.core.util.Consumer { t -> Log.e("CameraManager", "GPU Effect Error", t) }
+                            ) {}
+                            
+                            useCaseGroupBuilder.addEffect(lutEffect)
+                            Log.d("CameraManager", "✅ CameraEffect ditambahkan dengan LUT: $currentLutAsset")
+                        }
+
+                        val useCaseGroup = useCaseGroupBuilder.build()
+
+                        // Bind menggunakan UseCaseGroup, BUKAN use case individual
                         camera = cameraProvider.bindToLifecycle(
                             activity,
                             cameraSelector,
-                            preview,
-                            imageCapture,
-                            imageAnalyzer
+                            useCaseGroup 
                         )
                         Log.d("CameraManager", "✅ Camera started: fps=$targetFps, " +
-                                "lens=$lensFacing, isUsingPhysicalUw=$isUsingPhysicalUw, zoomRatio=$currentZoomRatio")
+                                "lens=$lensFacing, filter=$currentLutAsset")
                     } catch (e: Exception) {
                         Log.e("CameraManager", "bindToLifecycle failed", e)
                     }

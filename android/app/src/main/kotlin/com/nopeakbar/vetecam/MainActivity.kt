@@ -6,6 +6,7 @@ import com.nopeakbar.vetecam.camera.CameraPreviewFactory
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.FlutterInjector
 
 class MainActivity : FlutterActivity() {
 
@@ -51,6 +52,20 @@ class MainActivity : FlutterActivity() {
                     cameraManager.setFlashMode(mode)
                     result.success("Flash mode set to $mode")
                 }
+                
+                "setLiveFilter" -> {
+                    val lutAssetName = call.argument<String>("lutAsset")
+                    
+                    // Terjemahkan path Flutter ("assets/luts/...") ke path Native Android ("flutter_assets/assets/luts/...")
+                    val nativeAssetPath = if (lutAssetName != null) {
+                        FlutterInjector.instance().flutterLoader().getLookupKeyForAsset(lutAssetName)
+                    } else {
+                        null
+                    }
+                    
+                    cameraManager.setLiveFilter(nativeAssetPath) 
+                    result.success("Filter changed to $lutAssetName")
+                }
 
                 "setStabilizationMode" -> {
                     val enabled = call.argument<Boolean>("enabled") ?: true
@@ -71,6 +86,13 @@ class MainActivity : FlutterActivity() {
                     result.success("Zoom ratio set to $ratio")
                 }
 
+                "updateActiveZoom" -> {
+                    val ratio = call.argument<Double>("ratio")?.toFloat() ?: 1.0f
+                    cameraManager.updateActiveZoom(ratio)
+                    result.success("Active zoom updated to $ratio")
+                }
+
+                
                 // ── NEW: Query ultrawide support before showing the button ──
                 // Returns { "supported": Boolean, "minZoom": Double }
                 // Flutter uses this to show/hide the 0.5x button and to know

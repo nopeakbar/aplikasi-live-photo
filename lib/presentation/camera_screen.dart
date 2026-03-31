@@ -48,6 +48,8 @@ class _CameraScreenState extends State<CameraScreen>
   bool _ultrawideSupported = false;
   double _minZoomRatio = 0.5;
   bool _isUltrawide = false;
+  double _currentZoom = 1.0;
+  double _baseZoom = 1.0;
 
   // ── Other features ───────────────────────────────────────────────────────
   bool _showGrid = false;
@@ -88,6 +90,14 @@ class _CameraScreenState extends State<CameraScreen>
     _liveAnim.dispose();
     super.dispose();
   }
+
+  String? _selectedFilter;
+
+  // Pastikan ekstensinya sesuai dengan file aslimu (.png atau .jpg)
+  final List<Map<String, dynamic>> _availableFilters = [
+    {'name': 'Normal', 'asset': null},
+    {'name': 'Biru Vete', 'asset': 'assets/luts/biru-vete1.png'},
+  ];
 
   Future<void> _loadLastPhoto() async {
     final dir = Directory('/storage/emulated/0/Pictures/Vetecam');
@@ -213,6 +223,7 @@ class _CameraScreenState extends State<CameraScreen>
     final newIsUltrawide = !_isUltrawide;
     setState(() {
       _isUltrawide = newIsUltrawide;
+      _currentZoom = newIsUltrawide ? _minZoomRatio : 1.0;
       _cameraReady = false;
     });
 
@@ -299,11 +310,26 @@ class _CameraScreenState extends State<CameraScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. Camera preview
+          // 1. Camera preview dengan Pinch-to-Zoom
           _cameraReady
-              ? const AndroidView(
-                  viewType: 'com.akbar.motionphoto/camera_preview',
-                  creationParamsCodec: StandardMessageCodec(),
+              ? GestureDetector(
+                  onScaleStart: (details) {
+                    _baseZoom = _currentZoom;
+                  },
+                  onScaleUpdate: (details) {
+                    setState(() {
+                      // Mengalikan zoom awal dengan skala cubitan, limit maksimal zoom ke 10.0x
+                      _currentZoom = (_baseZoom * details.scale).clamp(
+                        _ultrawideSupported ? _minZoomRatio : 1.0,
+                        10.0,
+                      );
+                    });
+                    NativeBridge.updateActiveZoom(_currentZoom);
+                  },
+                  child: const AndroidView(
+                    viewType: 'com.akbar.motionphoto/camera_preview',
+                    creationParamsCodec: StandardMessageCodec(),
+                  ),
                 )
               : _buildPlaceholder(),
 
@@ -389,9 +415,64 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
+          Positioned(
+            bottom: 100, // Sesuaikan jaraknya dengan tombol jepretmu
+            left: 0,
+            right: 0,
+            child: _buildFilterSelector(),
+          ),
+
           // 8. Bottom controls
           Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
         ],
+      ),
+    );
+  }
+
+  Widget _buildFilterSelector() {
+    return Container(
+      height: 60,
+      margin: const EdgeInsets.only(bottom: 20),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: _availableFilters.length,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemBuilder: (context, index) {
+          final filter = _availableFilters[index];
+          final filterName = filter['name'] as String;
+          final lutAsset = filter['asset'] as String?;
+          final isSelected = _selectedFilter == lutAsset;
+
+          return GestureDetector(
+            onTap: () async {
+              setState(() {
+                _selectedFilter = lutAsset;
+              });
+              // Mengirim "assets/luts/biru-vete1.png" ke MainActivity
+              await NativeBridge.setLiveFilter(lutAsset);
+            },
+            child: Container(
+              margin: const EdgeInsets.only(right: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.yellow : Colors.black54,
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(
+                  color: isSelected ? Colors.yellow : Colors.white24,
+                  width: 2,
+                ),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                filterName,
+                style: TextStyle(
+                  color: isSelected ? Colors.black : Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

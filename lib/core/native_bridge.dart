@@ -53,6 +53,14 @@ class NativeBridge {
     }
   }
 
+  static Future<void> setLiveFilter(String? lutAssetPath) async {
+    try {
+      await _channel.invokeMethod('setLiveFilter', {'lutAsset': lutAssetPath});
+    } catch (e) {
+      print("Failed to set live filter: $e");
+    }
+  }
+
   static Future<void> setFlashMode(int mode) async {
     try {
       await _channel.invokeMethod('setFlashMode', {'mode': mode});
@@ -75,6 +83,14 @@ class NativeBridge {
       await _channel.invokeMethod('setZoomRatio', {'ratio': ratio});
     } catch (e) {
       print("Failed to set zoom: $e");
+    }
+  }
+
+  static Future<void> updateActiveZoom(double ratio) async {
+    try {
+      await _channel.invokeMethod('updateActiveZoom', {'ratio': ratio});
+    } catch (e) {
+      print("Failed to update active zoom: $e");
     }
   }
 
